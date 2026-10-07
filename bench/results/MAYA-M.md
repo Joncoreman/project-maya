@@ -1,0 +1,35 @@
+# Maya-M - results
+
+Maya-M (116 GB, `Maya-M/` on [Hugging Face](https://huggingface.co/peasantsmith/GLM-5.3-Flash-Maya-GGUF)) is Project
+Maya's larger quant of GLM-5.3-Flash, made from Z.ai's FP8 release with statistics from the FP8 model itself:
+
+| Tensors | Type |
+| --- | --- |
+| routed experts' gate/up | IQ2_S, error-feedback (GPTQ-style) rounding with the FP8 model's activation statistics |
+| routed experts' down | IQ3_XXS; IQ3_S in the most sensitive MoE layers (the first and last four) |
+| attention, shared experts, dense layers | Q6_K (the KDA gates and the indexer Q8_0, the router F32) |
+| the NextN (MTP) draft block | Q3_K / Q4_K experts |
+
+The calibration text is weighted toward tool calls and front-end code (HTML/CSS/JS, three.js, canvas), the work
+Maya-M is meant for. Recipe: `tools/maya_quant/recipes/maya-m.json`.
+
+## Against the FP8 model, token by token
+
+The same 8 held-out texts (7,672 tokens) through the engine, every next-token distribution compared with the FP8
+model's own:
+
+| | KL divergence vs FP8 (lower is better) | same top token as FP8 |
+| --- | ---: | ---: |
+| **Maya-M** (116 GB) | **0.329** | **86.2%** |
+| Maya-S (96.5 GB) | 0.428 | 83.3% |
+
+## Zero-shot accuracy
+
+ZS_TABLE
+
+## Tried and not kept
+
+An ISTA-DASLab-style refinement on top (each routed expert's group scales refitted to match the FP8 layer's output,
+codes held fixed, by least squares on calibration activations) lowered the layers' reconstruction error by 5-38% and
+the KL a little (0.323), but predicted held-out text slightly worse (4 of 8 texts better, 4 worse). The released
+Maya-M is the quant without it.

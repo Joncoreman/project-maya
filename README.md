@@ -16,7 +16,7 @@ Maya grew out of [Strata](https://github.com/Niko1221/Strata) (MIT): its engine 
 for GLM-5.3-Flash (the expert tiers across VRAM, RAM and SSD, the two-GPU split, MTP decoding), and its server and
 dashboard started from Strata's and were reworked for Maya (a new dashboard, images on demand, the thinking budget).
 
-## The model: Maya-S
+## The models: Maya-S and Maya-M
 
 Maya installs **Maya-S**, Project Maya's own compact quant of GLM-5.3-Flash (96.5 GB,
 [on Hugging Face](https://huggingface.co/peasantsmith/GLM-5.3-Flash-Maya-GGUF)), made for PCs with a smaller memory
@@ -28,6 +28,13 @@ experts, and it keeps the model's MTP block, which drafts tokens ahead (speculat
 WinoGrande, PIQA; 400 questions each, the same for both models). On held-out text it picks the same next token as the
 FP8 model 83% of the time, and it writes long answers (6,000-14,000 tokens) without looping.
 Details: [bench/results/MAYA-S.md](bench/results/MAYA-S.md).
+
+**Maya-M** (116 GB) is the larger quant, made for PCs with a bigger memory pool across RAM and VRAM: more bits where
+they count - IQ2_S gate/up experts, IQ3_XXS down projections and IQ3_S in the most sensitive layers - with the same
+FP8 statistics and error-feedback rounding, calibrated toward tool calls and front-end code. It is closer to the FP8
+model than Maya-S: 23% lower KL divergence, and it picks the same next token as the FP8 model 86% of the time. Set it
+up with `./setup.sh --setup --model Maya-M` (Windows: `START-MAYA.bat --setup --model Maya-M`).
+Details: [bench/results/MAYA-M.md](bench/results/MAYA-M.md).
 
 ## How fast is it?
 

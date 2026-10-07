@@ -86,6 +86,26 @@ MODELS = {
                            "3627575df16bd152db0f3fd7e488d270b33f3a9e6c7fa3b1b8ac381faafde882",
                        "GLM-5.3-Flash-vocab.gguf":
                            "8f53cb1bd2e631c14ef413e3284735d9e53f3c508d07a6f609e705b487105912"}}},
+    "Maya-M": {
+        "about": "Maya-M, Project Maya's larger quant: error-feedback-rounded IQ2_S gate/up experts, IQ3_XXS down "
+                 "projections (IQ3_S in the most sensitive layers), Q6_K attention, the MTP draft block, made from "
+                 "Z.ai's FP8 release",
+        "repo": "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "revision": "main", "folder": "Maya-M",
+        "file": "GLM-5.3-Flash-Maya-M-{i:05d}-of-{n:05d}.gguf", "shards": 3, "download_gb": 116.0,
+        "sha256": {
+            "GLM-5.3-Flash-Maya-M-00001-of-00003.gguf":
+                "3ac0f066ec45af3432d59b33de49bdfb29156432b627240b35769c7d02cc6c02",
+            "GLM-5.3-Flash-Maya-M-00002-of-00003.gguf":
+                "285951d2afa0cd98285b03d0dc4aa68d83daf1a6f4a2594fe40b0cdd27ade485",
+            "GLM-5.3-Flash-Maya-M-00003-of-00003.gguf":
+                "ebf1ce713f71207747e10eeebed87597969d8b5e1d9dd817420d2c2f7ca51e0e"},
+        "vision": {
+            "folder": "vision", "mmproj": "mmproj-GLM-5.3-Flash-F16.gguf", "vocab": "GLM-5.3-Flash-vocab.gguf",
+            "download_gb": 1.14,
+            "sha256": {"mmproj-GLM-5.3-Flash-F16.gguf":
+                           "3627575df16bd152db0f3fd7e488d270b33f3a9e6c7fa3b1b8ac381faafde882",
+                       "GLM-5.3-Flash-vocab.gguf":
+                           "8f53cb1bd2e631c14ef413e3284735d9e53f3c508d07a6f609e705b487105912"}}},
 }
 SHARD_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 PACK_FILES = ("index.txt", "native_experts.txt", "dense.bin", "tokenizer/vocab.json", "tokenizer/merges.txt",
