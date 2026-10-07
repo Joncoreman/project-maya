@@ -1424,7 +1424,7 @@ static int glm_pack_generate(const Options& o) {
             int64_t max_new = 0;
             ss >> max_new;
             strata::kernels::SamplerParams rq = sp;
-            bool any_key = false;
+            bool any_key = false, greedy_req = false;
             req_think_budget = 0;
             req_think_end = -1;
             std::string tok2, ids, emb_path;
@@ -1436,7 +1436,11 @@ static int glm_pack_generate(const Options& o) {
                     continue;
                 }
                 const std::string k = tok2.substr(0, eq), v = tok2.substr(eq + 1);
-                if (k == "temperature") { rq.temperature = (float) std::atof(v.c_str()); any_key = true; }
+                if (k == "temperature") {   // temperature=0 (or below): greedy, whatever else the line says
+                    rq.temperature = (float) std::atof(v.c_str());
+                    if (rq.temperature <= 0.0f) greedy_req = true;
+                    else any_key = true;
+                }
                 else if (k == "top_p") { rq.top_p = (float) std::atof(v.c_str()); any_key = true; }
                 else if (k == "top_k") { rq.top_k = std::atoi(v.c_str()); any_key = true; }
                 else if (k == "min_p") { rq.min_p = (float) std::atof(v.c_str()); any_key = true; }
@@ -1447,6 +1451,7 @@ static int glm_pack_generate(const Options& o) {
                 // request-scoped engine settings): ignored rather than approximated
             }
             if (any_key) rq.greedy = false;   // any sampler key switches the request to the sampled path
+            if (greedy_req) rq.greedy = true;
             std::vector<int64_t> toks;
             std::string e;
             if (max_new <= 0 || ids.empty() || !parse_i64_list(ids.c_str(), toks, e)) {

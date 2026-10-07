@@ -272,6 +272,20 @@ class StrataEngine:
     def sampling_keys(sampling: dict) -> str:
         keys = ""
         t = sampling.get("temperature")
+        tb, te = sampling.get("_think_budget"), sampling.get("_think_end")   # the run config's (StrataService.run)
+        think = f" think_budget={tb} think_end={te}" if isinstance(tb, int) and isinstance(te, int) and tb > 0 and \
+            te >= 0 else ""
+        # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
+        tune, tune_keys = sampling.get("strata_tune"), ""
+        if isinstance(tune, dict):
+            for k in ("pcie_frac", "spec_min_p"):
+                v = tune.get(k)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= float(v) <= 1.0:
+                    tune_keys += f" {k}={float(v)!r}"
+        if isinstance(t, (int, float)) and not isinstance(t, bool) and float(t) <= 0.0:
+            # temperature 0 is greedy: the engine reads temperature=0 as that whatever else the line says, and no other
+            # sampler key goes (with only a config's top_p the engine took its sampled path: not deterministic)
+            return " temperature=0" + think + tune_keys + StrataEngine.projection_key(sampling)
         if isinstance(t, (int, float)) and float(t) > 0.0:
             keys += f" temperature={float(t)!r}"
         tp = sampling.get("top_p")
@@ -306,16 +320,7 @@ class StrataEngine:
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
-        tb, te = sampling.get("_think_budget"), sampling.get("_think_end")   # the run config's (StrataService.run)
-        if isinstance(tb, int) and isinstance(te, int) and tb > 0 and te >= 0:
-            keys += f" think_budget={tb} think_end={te}"
-        # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
-        tune = sampling.get("strata_tune")
-        if isinstance(tune, dict):
-            for k in ("pcie_frac", "spec_min_p"):
-                v = tune.get(k)
-                if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= float(v) <= 1.0:
-                    keys += f" {k}={float(v)!r}"
+        keys += think + tune_keys
         return keys + StrataEngine.projection_key(sampling)
 
     @staticmethod
