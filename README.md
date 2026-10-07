@@ -46,14 +46,15 @@ Measured with Maya-S through the dashboard. A token is about ¾ of a word.
 | **GPU** | NVIDIA, compute capability 7.0 or newer (V100 and newer); one GPU, or two that share the model (each holds half of the layers). The engine fills whatever VRAM you have with the most-used experts: more VRAM is faster. Measured: 1 and 2x V100 32 GB. |
 | **RAM** | It runs with **32 GB** (the machine in the table above has 30 GB). More RAM keeps more experts close and is faster; what does not fit is read from the SSD while it answers. |
 | **Disk** | **~100 GB free on a fast NVMe SSD** (the model is 96.5 GB, its pictures encoder 1.1 GB, and the engine reads from the model while it answers). Not a hard disk. |
-| **System** | Linux (x86-64, CPU with AVX2), NVIDIA driver, CUDA toolkit 12.x (CUDA 13 can be used for Turing and newer, but it no longer compiles for Volta/V100), g++, Python 3.10+. Windows and WSL2 are not supported yet ([why](#windows)). |
+| **System** | Linux (x86-64, CPU with AVX2), NVIDIA driver, CUDA toolkit 12.x (CUDA 13 can be used for Turing and newer, but it no longer compiles for Volta/V100), g++, Python 3.10+. Windows 10/11: experimental, with Visual Studio 2022 Build Tools instead of g++ ([Windows](#windows)). Not WSL2. |
 
 The installer checks all of this and prints the exact command for anything missing. It installs nothing
 system-wide by itself.
 
 ## Install
 
-**You need:** an NVIDIA GPU (V100 / RTX 20 or newer) on Linux, ~100 GB free on an NVMe SSD, a current NVIDIA driver
+**You need:** an NVIDIA GPU (V100 / RTX 20 or newer) on Linux (Windows: [experimental](#windows)), ~100 GB free on
+an NVMe SSD, a current NVIDIA driver
 and the CUDA toolkit (12.x for a V100; the engine is compiled for your GPU). Everything else - Python, the engine, the
 model - is set up for you, the way Strata does it.
 
@@ -154,9 +155,23 @@ RAM experts the CPU computes itself. These settings change that (put them in the
 
 ## Windows
 
-Not yet. The engine's model loader maps the model files with Linux calls (`mmap`, `O_DIRECT`) and has no Windows
-version yet. WSL2 does not work either: Strata measured that WSL2's GPU driver pins only about 1 GB of RAM, and Maya
-pins tens of GB. `START-MAYA.bat` says the same.
+Experimental: the same installer sets Maya up natively on Windows 10/11 (64-bit), and the engine and the image
+encoder compile there with Visual Studio 2022 and CUDA 12.8. Maya is developed and measured on Linux and has not
+been run on a Windows PC with an NVIDIA GPU yet, so tell us how it runs on yours.
+
+1. Install once: the NVIDIA driver,
+   [CUDA Toolkit 12.8](https://developer.nvidia.com/cuda-12-8-0-download-archive),
+   [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop
+   development with C++", and 64-bit Python 3.10+ (`winget install -e --id Python.Python.3.12 --scope user`).
+2. `git clone https://github.com/mw00/project-maya.git` (or download the zip), then double-click
+   **`START-MAYA.bat`**. It takes the same options as `./maya.sh` (`START-MAYA.bat --check`, `--setup`, ...).
+
+- Set Windows' page file to "System managed" (System > About > Advanced system settings > Performance > Virtual
+  memory). Windows charges every allocation on the graphics card to RAM + page file too, and Maya pins tens of GB
+  of RAM for its experts.
+- Put the model on an NVMe SSD: `START-MAYA.bat --setup --data-dir D:\Maya-data`.
+- Not WSL2: Strata measured that WSL2's GPU driver pins only about 1 GB of RAM, and Maya pins tens of GB. Run
+  `START-MAYA.bat` in Windows itself.
 
 ## Credits and license
 

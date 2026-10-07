@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Project Maya - set up and start GLM-5.3-Flash on your own NVIDIA GPU(s).  Linux.
+"""Project Maya - set up and start GLM-5.3-Flash on your own NVIDIA GPU(s).  Linux; Windows (experimental).
 
     ./maya.sh                 the first run sets everything up and starts the dashboard; later runs just start it
     ./maya.sh --setup         set up again (other GPUs, another context length, another model folder)
     ./maya.sh --check         only check this PC
 
-./maya.sh makes the private Python environment (.venv, the way Strata's setup.sh does) and runs this file.  It
-reuses Strata's installer (setup.py, imported unchanged) for the PC checks, pip, llama.cpp's source and resumable
-downloads.
+On Windows START-MAYA.bat takes the same options.  Both make the private Python environment (.venv, the way Strata's
+setup.sh does) and run this file.  It reuses Strata's installer (setup.py, imported unchanged) for the PC checks,
+pip, llama.cpp's source and resumable downloads.
 
 What the first run does (each step is skipped when it is already done):
 
-  1. checks the PC: NVIDIA GPU(s) of compute capability 7.0+, driver, CUDA toolkit (nvcc), g++, CMake, RAM, CPU
+  1. checks the PC: NVIDIA GPU(s) of compute capability 7.0+, driver, CUDA toolkit (nvcc), the C++ compiler (g++;
+     on Windows Visual Studio 2022's Build Tools), CMake, RAM, CPU
   2. asks: which GPUs (one, or two that split the layers), how much context
   3. Python packages into .venv, llama.cpp's source at the pinned commit (it lists them and asks first)
   4. compiles the engine (`build/strata`) for your GPU(s): 10-30 minutes, once
@@ -20,7 +21,8 @@ What the first run does (each step is skipped when it is already done):
   6. builds the pack (the engine's index of the GGUF files) inside the model folder
   7. images: compiles the vision encoder (`build-vision/bin/strata-vision`) and fetches the model's vision files
      (1.1 GB, shown and asked first like the model; --no-vision skips it)
-  8. writes maya-<model>.json and run-maya-<model>.sh, and starts the dashboard on http://127.0.0.1:8080
+  8. writes maya-<model>.json and run-maya-<model>.sh (.bat on Windows), and starts the dashboard on
+     http://127.0.0.1:8080
 
 Nothing is installed system-wide: a missing tool is reported with the command that installs it.
 """
@@ -43,12 +45,14 @@ sys.path.insert(0, str(HERE / "tools"))
 import setup as S  # noqa: E402  Strata's installer: PC checks, pip, llama.cpp, downloads (nothing runs on import)
 from setup import ask, fail, ok, run, say, step, warn  # noqa: E402
 
+WIN = S.WIN
+ME = "START-MAYA.bat" if WIN else "./maya.sh"      # how this is started, for the messages
 ROOT = S.ROOT
 BUILD = ROOT / "build"
-EXE = BUILD / "strata"
+EXE = BUILD / ("strata.exe" if WIN else "strata")
 STAMP = BUILD / "MAYA-BUILD.json"                  # what the engine in build/ was compiled from and for
 VBUILD = ROOT / "build-vision"
-VEXE = VBUILD / "bin" / "strata-vision"            # the image encoder (tools/vision, llama.cpp's mtmd)
+VEXE = VBUILD / "bin" / ("strata-vision.exe" if WIN else "strata-vision")  # the image encoder (llama.cpp's mtmd)
 VSTAMP = VBUILD / "MAYA-BUILD.json"
 MIN_CC = 70                                        # Volta (V100) and newer (the GLM path; see arch_setting)
 PY_PACKAGES = list(S.PY_PACKAGES)                  # (pillow: pictures in formats other than JPEG/PNG/BMP/GIF)
@@ -102,7 +106,10 @@ def configs() -> list:
 
 
 def mem_gb() -> tuple:
-    """(total, available) RAM in GiB - the engine sizes its RAM tier from MemAvailable."""
+    """(total, available) RAM in GiB - the engine sizes its RAM tier from MemAvailable (on Windows ullAvailPhys)."""
+    if WIN:
+        m = S._memory_status()
+        return m.ullTotalPhys / 2**30, m.ullAvailPhys / 2**30
     info = {}
     try:
         with open("/proc/meminfo") as f:
@@ -122,7 +129,12 @@ def existing(path: Path) -> Path:
 
 
 def rotational(path: Path) -> bool:
-    """True when `path` is on a spinning disk (best effort: findmnt + lsblk)."""
+    """True when `path` is on a spinning disk (best effort: findmnt + lsblk; on Windows the drive's MediaType)."""
+    if WIN:
+        drive = existing(path).drive[:1]
+        return drive.isalpha() and S.out(
+            ["powershell", "-NoProfile", "-Command", "Get-PhysicalDisk | Where-Object DeviceId -eq "
+             f"(Get-Partition -DriveLetter {drive}).DiskNumber | Select-Object -ExpandProperty MediaType"]).strip() == "HDD"
     src = S.out(["findmnt", "-no", "SOURCE", "--target", str(existing(path))]).strip().split("[")[0]
     rota = S.out(["lsblk", "-ndo", "ROTA", src]).split() if src.startswith("/dev/") else []
     return bool(rota) and rota[0] == "1"
@@ -134,7 +146,7 @@ def tool_version(exe: str) -> tuple:
 
 
 def venv_tool(name: str):
-    p = Path(sys.executable).parent / name
+    p = Path(sys.executable).parent / (name + (".exe" if WIN else ""))
     return str(p) if p.exists() else None
 
 
@@ -166,10 +178,19 @@ def find_nvcc(archs, given=None) -> tuple:
         return (int(v.group(1)), int(v.group(2))) if v else None
     if given:
         return given, version(given)
-    cands = [shutil.which("nvcc"), os.environ.get("CUDA_PATH") and str(Path(os.environ["CUDA_PATH"]) / "bin" / "nvcc")]
-    cands += [str(p / "bin" / "nvcc") for p in sorted(Path("/usr/local").glob("cuda*"))]
-    cands += [str(p / "bin" / "nvcc") for p in sorted(Path("/opt").glob("cuda*"))] + ["/usr/bin/nvcc"]
-    return pick_nvcc([(c, version(c)) for c in dict.fromkeys(c for c in cands if c and Path(c).exists())], archs)
+    return pick_nvcc([(c, version(c)) for c in dict.fromkeys(c for c in nvcc_candidates() if c and Path(c).exists())],
+                     archs)
+
+
+def nvcc_candidates() -> list:
+    """Every place a CUDA toolkit's nvcc may be (some do not exist): PATH, CUDA_PATH, the default install folders."""
+    exe = "nvcc.exe" if WIN else "nvcc"
+    cands = [shutil.which("nvcc"), os.environ.get("CUDA_PATH") and str(Path(os.environ["CUDA_PATH"]) / "bin" / exe)]
+    if WIN:
+        base = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "NVIDIA GPU Computing Toolkit" / "CUDA"
+        return cands + [str(p / "bin" / exe) for p in sorted(base.glob("v*"))]
+    cands += [str(p / "bin" / exe) for p in sorted(Path("/usr/local").glob("cuda*"))]
+    return cands + [str(p / "bin" / exe) for p in sorted(Path("/opt").glob("cuda*"))] + ["/usr/bin/nvcc"]
 
 
 def pick_nvcc(found, archs) -> tuple:
@@ -181,6 +202,10 @@ def pick_nvcc(found, archs) -> tuple:
 
 
 def toolkit_hint(archs) -> str:
+    if WIN:
+        return ("NVIDIA's CUDA Toolkit 12.8 for Windows (the driver can stay as it is): "
+                "https://developer.nvidia.com/cuda-12-8-0-download-archive" +
+                (" - Volta (V100) needs 12.x, CUDA 13 dropped it" if min(archs) < 75 else ""))
     if min(archs) < 75:
         return ("Volta (V100) needs CUDA 12.x - Ubuntu 24.04: sudo apt-get install -y nvidia-cuda-toolkit (CUDA 12.0), "
                 "or NVIDIA's cuda-toolkit-12-8 package: https://developer.nvidia.com/cuda-12-8-0-download-archive")
@@ -191,7 +216,11 @@ def toolkit_hint(archs) -> str:
 
 
 def cuda_lib_dirs(nvcc: str) -> list:
-    """The toolkit's library folders for the engine's LD_LIBRARY_PATH (none for a distribution's /usr/bin/nvcc)."""
+    """The toolkit's library folders for the engine's LD_LIBRARY_PATH (none for a distribution's /usr/bin/nvcc); on
+    Windows its DLL folders (bin, and bin\\x64 in CUDA 13) for the engine's PATH."""
+    if WIN:
+        b = Path(nvcc).parent
+        return [str(p) for p in (b, b / "x64") if p.is_dir()]
     base = Path(nvcc).resolve().parent.parent
     if base == Path("/usr"):
         return []
@@ -233,16 +262,18 @@ def choose_gpus(a, found) -> list:
 
 def check_pc(a) -> dict:
     step(1, "checking this PC")
-    if not sys.platform.startswith("linux"):
-        fail("Project Maya runs on Linux only for now",
-             "the engine's GLM model loader has no Windows file mapping yet (README-MAYA.md, START-MAYA.bat)")
+    if not (WIN or sys.platform.startswith("linux")):
+        fail("Project Maya runs on Linux and Windows", "the engine needs an NVIDIA GPU and CUDA")
+    if WIN:
+        warn("Windows support is new (experimental): Maya is developed and measured on Linux - tell us how it runs")
     if S.is_wsl():
         warn("this is WSL2, which Maya does not support: Strata measured that WSL2's driver pins only about 1 GB of "
              "RAM for the GPU, and Maya's RAM tier pins tens of GB. Use a native Linux install.")
     found = S.gpus()
     if not found:
         fail("no NVIDIA GPU found (nvidia-smi did not answer)",
-             "install the NVIDIA driver (Ubuntu: sudo ubuntu-drivers install), restart, and run ./maya.sh again")
+             ("install the NVIDIA driver (https://www.nvidia.com/drivers)" if WIN else
+              "install the NVIDIA driver (Ubuntu: sudo ubuntu-drivers install)") + f", restart, and run {ME} again")
     say("  NVIDIA GPUs:")
     for g in found:
         say(f"    {gpu_label(g)} - " + ("can be used" if int(g["arch"]) >= MIN_CC else
@@ -275,11 +306,20 @@ def check_pc(a) -> dict:
     need_drv = 580 if nv and nv >= (13, 0) else 525
     if drv < need_drv:
         problems.append((f"the NVIDIA driver {chosen[0]['driver']} is too old: {need_drv} or newer is needed",
-                         "Ubuntu: sudo ubuntu-drivers install, then restart; or https://www.nvidia.com/drivers"))
+                         ("" if WIN else "Ubuntu: sudo ubuntu-drivers install, then restart; or ") +
+                         "https://www.nvidia.com/drivers"))
     else:
         ok(f"NVIDIA driver {chosen[0]['driver']}")
 
-    if a.host_compiler:
+    if WIN:
+        vcvars = S.find_vcvars()
+        if vcvars is None:
+            problems.append(("the C++ compiler (Visual Studio 2022 Build Tools, 'Desktop development with C++') is "
+                             "not installed", "https://visualstudio.microsoft.com/visual-cpp-build-tools/ - in the "
+                             "installer tick 'Desktop development with C++' (CUDA 12 needs 2019 or 2022, not 2026)"))
+        else:
+            ok(f"C++ compiler: Visual Studio Build Tools ({vcvars})")
+    elif a.host_compiler:
         if shutil.which(a.host_compiler) is None:
             problems.append((f"--host-compiler {a.host_compiler} is not installed",
                              f"Ubuntu/Debian: sudo apt-get install -y {Path(a.host_compiler).name}"))
@@ -290,7 +330,7 @@ def check_pc(a) -> dict:
     else:
         ok("C++ compiler: " + (S.out(["g++", "--version"]).splitlines() or ["g++"])[0])
 
-    sc = shutil.which("cmake")
+    sc = pick_cmake() or shutil.which("cmake")
     scv = tool_version(sc) if sc else (0, 0)
     if scv >= (3, 24):
         ok(f"CMake {scv[0]}.{scv[1]}")
@@ -302,6 +342,12 @@ def check_pc(a) -> dict:
     total, avail = mem_gb()
     msg = f"RAM: {total:.0f} GB, {avail:.0f} GB available now"
     ok(msg + ("" if total >= 60 else " - it runs with 32 GB; more RAM keeps more experts close and is faster"))
+    pf = S.page_file_gb()
+    if pf is not None and pf < vram:
+        warn(f"Windows' page file is {pf:.0f} GB: under Windows every allocation on the graphics card is also charged "
+             f"to RAM + page file, so the engine's RAM tier shrinks by up to the {vram:.0f} GB of VRAM it fills. Set "
+             "it to \"System managed\" (or larger than your VRAM): System > About > Advanced system settings > "
+             "Performance > Advanced > Virtual memory")
     cpu, avx2, avx512 = S.cpu_info()
     if not avx2:
         problems.append((f"the CPU ({cpu}) has no AVX2", "the engine's CPU expert lane and ggml need AVX2"))
@@ -314,8 +360,8 @@ def check_pc(a) -> dict:
             say(f"  [X]  {what}")
             say(f"       {how}")
         fail("something Maya needs is missing (above)",
-             "install it and run ./maya.sh again - this script installs nothing system-wide")
-    return {"gpus": chosen, "archs": archs, "nvcc": nvcc}
+             f"install it and run {ME} again - this script installs nothing system-wide")
+    return {"gpus": chosen, "archs": archs, "nvcc": nvcc, "vcvars": str(S.find_vcvars()) if WIN else None}
 
 
 # ------------------------------------------------------------------------------------------------ 2. choices
@@ -354,7 +400,7 @@ def tools_step(a) -> Path:
         for d in downloads:
             say("    - " + d)
         if ask("  Download them now?", ["y", "n"], "y", a.yes) != "y":
-            fail("nothing was downloaded", "run ./maya.sh again when you are ready (or pass --llama-dir with a "
+            fail("nothing was downloaded", f"run {ME} again when you are ready (or pass --llama-dir with a "
                                            f"llama.cpp checkout at commit {S.LLAMA_CPP_COMMIT[:10]})")
     S.pip_install(PY_PACKAGES, ", ".join(PY_PACKAGES))
     if not llama_ok:
@@ -384,8 +430,11 @@ def compile_engine(archs, gpu_ids, nvcc, host_compiler, llama: Path, src: str, s
     soft: a failure warns and returns None (the engine already there keeps working) instead of stopping."""
     def stop(what):
         msg = f"the engine build stopped while {what} (the reason is above)"
-        hint = ("common causes: 'unsupported GNU version' - install an older g++ your CUDA accepts (e.g. g++-13) and run "
-                "again (it is found by itself), or pass --host-compiler g++-13;\n       'Unsupported gpu architecture compute_70' - CUDA 13 cannot build for Volta, "
+        hint = ("common causes: 'unsupported Microsoft Visual Studio version' - CUDA 12 needs Visual Studio 2019 or "
+                "2022 (its Build Tools are enough);" if WIN else
+                "common causes: 'unsupported GNU version' - install an older g++ your CUDA accepts (e.g. g++-13) and run "
+                "again (it is found by itself), or pass --host-compiler g++-13;") + (
+                "\n       'Unsupported gpu architecture compute_70' - CUDA 13 cannot build for Volta, "
                 "install CUDA 12.x;\n       the compiler killed (out of memory) - close programs and run it again "
                 "(it continues)")
         if soft:
@@ -395,7 +444,7 @@ def compile_engine(archs, gpu_ids, nvcc, host_compiler, llama: Path, src: str, s
 
     cmake = pick_cmake()
     if cmake is None:
-        return stop("looking for CMake 3.24+ (pip installs one into .venv: run ./maya.sh --setup)")
+        return stop(f"looking for CMake 3.24+ (pip installs one into .venv: run {ME} --setup)")
     gen = cached_generator()
     ninja = venv_tool("ninja") or shutil.which("ninja")
     conf = [cmake]
@@ -418,12 +467,9 @@ def compile_engine(archs, gpu_ids, nvcc, host_compiler, llama: Path, src: str, s
     if cuda_archs == "native":
         say("  (CMakeLists.txt refuses an explicit sm_70 - Strata's own floor is sm_75 - so CMake is asked for this")
         say(f"  machine's GPUs instead: CMAKE_CUDA_ARCHITECTURES=native with CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']})")
-    if run(conf, env=env, check=False).returncode != 0:
-        return stop("configuring")
-    if run(build, env=env, check=False).returncode != 0:
-        say("  (the build stopped - trying it once more: it continues where it stopped)")
-        if run(build, env=env, check=False).returncode != 0:
-            return stop("compiling")
+    stopped = cmake_steps(conf, build, env, "build-maya.bat")
+    if stopped:
+        return stop(stopped)
     meta = {"src": src, "archs": archs, "gpu_ids": list(gpu_ids), "nvcc": nvcc, "host_compiler": host_compiler,
             "llama": str(llama), "lib_dirs": cuda_lib_dirs(nvcc), "date": time.strftime("%Y-%m-%d %H:%M")}
     STAMP.write_text(json.dumps(meta, indent=1), encoding="utf-8")
@@ -431,7 +477,43 @@ def compile_engine(archs, gpu_ids, nvcc, host_compiler, llama: Path, src: str, s
     return meta
 
 
-PROBE_CU = """#include <cmath>
+def cmdline(cmd) -> str:
+    """One command as a line of a Windows .bat."""
+    return " ".join(f'"{x}"' if re.search(r'[\s;&|<>^()]', str(x)) else str(x) for x in cmd)
+
+
+def shell_join(cmd) -> str:
+    """One command as it is typed here: a POSIX shell, or Windows' cmd."""
+    return cmdline(cmd) if WIN else shlex.join(cmd)
+
+
+def cmake_steps(conf, build, env, bat_name: str) -> str | None:
+    """CMake's configure, then its build (once more when that stops: it continues where it stopped).  None when both
+    worked, else what stopped.  On Windows both run in a .bat that first calls Visual Studio's vcvars64.bat - the
+    compiler's environment - the way Strata's setup.py builds there (cmake_build)."""
+    if not WIN:
+        if run(conf, env=env, check=False).returncode != 0:
+            return "configuring"
+        if run(build, env=env, check=False).returncode != 0:
+            say("  (the build stopped - trying it once more: it continues where it stopped)")
+            if run(build, env=env, check=False).returncode != 0:
+                return "compiling"
+        return None
+    vcvars = S.find_vcvars()
+    if vcvars is None:
+        return "looking for Visual Studio's C++ compiler (the Build Tools with 'Desktop development with C++')"
+    bat = ROOT / bat_name
+    bat.write_text(f'@echo off\r\ncall "{vcvars}" >nul\r\n{cmdline(conf)} || exit /b 3\r\n{cmdline(build)} && exit /b 0'
+                   '\r\necho   (the build stopped - trying it once more: it continues where it stopped)\r\n'
+                   f'{cmdline(build)} || exit /b 4\r\n', encoding="utf-8")
+    say(f"  > {bat}   (Visual Studio's environment, then:)")
+    say("  > " + cmdline(conf))
+    say("  > " + cmdline(build))
+    rc = subprocess.call(["cmd", "/c", str(bat)], env=env)
+    return None if rc == 0 else "compiling" if rc == 4 else "configuring"
+
+
+PROBE_CU ="""#include <cmath>
 #include <string>
 #include <vector>
 __global__ void k(float* x) { x[0] = rsqrtf(x[0]) + sinf(x[1]) + expf(x[2]) + __expf(x[3]) + sqrtf(x[4]); }
@@ -445,7 +527,8 @@ def toolchain_for(archs, nvcc_given: str | None, hc_given: str | None) -> tuple:
     installed g++-N (newest first; --host-compiler alone if given), on a small file the way the engine compiles:
     C++20 and the math functions the kernels use.  A toolkit refuses a g++ newer than it supports, and a newer
     glibc's own rsqrtf/sinpi declarations clash with older CUDA headers - nothing but trying tells which pair works
-    on a given system."""
+    on a given system.  On Windows the compiler is Visual Studio's (in its vcvars64.bat environment): only the
+    toolkits are tried."""
     import tempfile
 
     def version(c):
@@ -454,20 +537,18 @@ def toolchain_for(archs, nvcc_given: str | None, hc_given: str | None) -> tuple:
     if nvcc_given:
         nvccs = [nvcc_given]
     else:
-        cands = [shutil.which("nvcc"), os.environ.get("CUDA_PATH") and str(Path(os.environ["CUDA_PATH"]) / "bin" / "nvcc")]
-        cands += [str(q / "bin" / "nvcc") for q in sorted(Path("/usr/local").glob("cuda*"))]
-        cands += [str(q / "bin" / "nvcc") for q in sorted(Path("/opt").glob("cuda*"))] + ["/usr/bin/nvcc"]
         seen, found = set(), []
-        for c in cands:
+        for c in nvcc_candidates():
             if c and Path(c).exists() and os.path.realpath(c) not in seen:
                 seen.add(os.path.realpath(c))
                 found.append((c, version(c)))
         lo, hi = nvcc_range(archs)
         nvccs = [c for c, v in sorted((f for f in found if f[1]), key=lambda f: f[1], reverse=True)
                  if v >= lo and (hi is None or v < hi)]
-    hcs = [hc_given] if hc_given else [None] + sorted(
+    hcs = [None] if WIN else [hc_given] if hc_given else [None] + sorted(
         {q.name for d in ("/usr/bin", "/usr/local/bin") for q in Path(d).glob("g++-[0-9]*")
          if re.fullmatch(r"g\+\+-\d+", q.name)}, key=lambda n: -int(n[4:]))
+    vcvars = S.find_vcvars() if WIN else None
     say("  Finding a CUDA toolkit and C++ compiler that build the engine here ...")
     with tempfile.TemporaryDirectory() as t:
         src = Path(t) / "probe.cu"
@@ -476,10 +557,14 @@ def toolchain_for(archs, nvcc_given: str | None, hc_given: str | None) -> tuple:
             for c in hcs:
                 cmd = [nv, "-std=c++20", "-c", str(src), "-o", str(Path(t) / "probe.o")] + \
                       (["-ccbin", shutil.which(c) or c] if c else [])
+                if vcvars:                             # cl.exe is on PATH only inside Visual Studio's environment
+                    bat = Path(t) / "probe.bat"
+                    bat.write_text(f'@echo off\r\ncall "{vcvars}" >nul\r\n{cmdline(cmd)}\r\n', encoding="utf-8")
+                    cmd = ["cmd", "/c", str(bat)]
                 if subprocess.run(cmd, capture_output=True, text=True).returncode == 0:
-                    ok(f"{nv} with {c or 'the default g++'}")
+                    ok(f"{nv} with " + ("Visual Studio's C++ compiler" if WIN else c or "the default g++"))
                     return nv, c
-    warn("no installed CUDA toolkit and g++ pair compiled a test file: the build will show why (" +
+    warn("no installed CUDA toolkit and C++ compiler pair compiled a test file: the build will show why (" +
          toolkit_hint(archs) + ")")
     return (nvccs[0] if nvccs else nvcc_given), hc_given
 
@@ -510,7 +595,7 @@ def refresh_engine(cfg: dict) -> None:
     nvcc, llama = meta.get("nvcc"), Path(meta.get("llama") or ROOT / "third_party" / "llama.cpp")
     if not nvcc or not Path(nvcc).exists() or not (llama / "ggml" / "CMakeLists.txt").exists():
         warn("the compiler or llama.cpp's source it was built with is gone: starting the engine compiled before "
-             "(./maya.sh --setup --rebuild compiles it again)")
+             f"({ME} --setup --rebuild compiles it again)")
         return
     gpu_ids = meta.get("gpu_ids") or (cfg.get("gpu") if isinstance(cfg.get("gpu"), list) else [0])
     compile_engine(meta["archs"], gpu_ids, nvcc, meta.get("host_compiler"), llama, src, soft=True)
@@ -570,8 +655,8 @@ def offer_download(a, quant: str, d: Path, shards: list) -> bool:
     remaining = max(0.0, m["download_gb"] - on_disk)
     free = shutil.disk_usage(existing(d)).free / 1e9
     curl = shutil.which("curl")
-    cmds = [["mkdir", "-p", str(d)]] + [["curl", "-L", "--fail", "--retry", "5", "-C", "-", "-o", str(s), urls[s]]
-                                        for s in missing]
+    cmds = [["mkdir"] + ([] if WIN else ["-p"]) + [str(d)]] + \
+        [["curl", "-L", "--fail", "--retry", "5", "-C", "-", "-o", str(s), urls[s]] for s in missing]
     say(f"  {quant}: {m['about']}.")
     say(f"  Source: https://huggingface.co/{m['repo']} (folder {m['folder']}/); the files' own license applies.")
     say(f"  The model is {m['download_gb']:.1f} GB in {len(shards)} files; {len(missing)} still to download, about "
@@ -579,23 +664,24 @@ def offer_download(a, quant: str, d: Path, shards: list) -> bool:
     say(f"    {d}   ({free:.0f} GB free there)")
     if free < remaining + 3:
         fail(f"not enough free space in {d}: about {remaining + 3:.0f} GB are needed (the model + its pack)",
-             "free some space, or put the model on another drive: ./maya.sh --setup --data-dir /path/on/nvme")
+             f"free some space, or put the model on another drive: {ME} --setup --data-dir " +
+             (r"D:\Maya-data" if WIN else "/path/on/nvme"))
     if rotational(d):
         warn(f"{d} is on a spinning hard disk: the engine reads experts from these files while it answers - use an "
              "NVMe SSD (--data-dir)")
     say("  The exact commands (resumable: running them again continues an interrupted download):")
     for c in cmds:
-        say("    " + shlex.join(c))
+        say("    " + shell_join(c))
     say("  You can also run them yourself (or download the files any other way into that folder, or pass")
-    say("  --gguf-dir <folder with the files>), then run ./maya.sh again.")
+    say(f"  --gguf-dir <folder with the files>), then run {ME} again.")
     if not curl:
-        warn("curl is not installed (sudo apt-get install -y curl): if you say yes, the same URLs are downloaded "
-             "with Python instead (also resumable)")
+        warn("curl is not installed" + ("" if WIN else " (sudo apt-get install -y curl)") + ": if you say yes, the "
+             "same URLs are downloaded with Python instead (also resumable)")
     if not a.download_model and ask(f"  Download about {remaining:.0f} GB now with these commands? (y/n)",
                                     ["y", "n"], "n", False) != "y":
         say()
-        say("Nothing was downloaded. When the files are in place, run ./maya.sh again "
-            "(./maya.sh --download-model downloads them without asking).")
+        say(f"Nothing was downloaded. When the files are in place, run {ME} again "
+            f"({ME} --download-model downloads them without asking).")
         return False
     d.mkdir(parents=True, exist_ok=True)
     for s in missing:
@@ -603,12 +689,12 @@ def offer_download(a, quant: str, d: Path, shards: list) -> bool:
             cmd = ["curl", "-L", "--fail", "--retry", "5", "-C", "-", "-o", str(s), urls[s]]
             if run(cmd, check=False).returncode != 0:
                 fail(f"the download of {s.name} stopped (the reason is above)",
-                     "run ./maya.sh --download-model again: it continues where it stopped")
+                     f"run {ME} --download-model again: it continues where it stopped")
         else:
             S.download(urls[s], s)
         why = incomplete(s)
         if why:
-            fail(f"{s.name} after the download: {why}", "delete it and run ./maya.sh --download-model again")
+            fail(f"{s.name} after the download: {why}", f"delete it and run {ME} --download-model again")
         want = m["sha256"].get(s.name)
         if want:
             say(f"  checking {s.name}'s sha256 ...")
@@ -630,7 +716,7 @@ def model_step(a, data: Path):
         for s in shards:
             why = incomplete(s)
             if why:
-                fail(f"{s.name}: {why}", "finish copying or downloading it, then run ./maya.sh again")
+                fail(f"{s.name}: {why}", f"finish copying or downloading it, then run {ME} again")
         if quant not in MODELS:
             warn(f"{quant}: experimental - only {', '.join(MODELS)} has been measured with Maya (README.md)")
     else:
@@ -662,7 +748,9 @@ def pack_step(a, d: Path, shards: list, llama: Path) -> Path:
         return pack
     if not os.access(d, os.W_OK):
         fail(f"{d} is not writable: the pack is written next to the GGUF files (the engine finds them at <pack>/..)",
-             "link the .gguf files into a writable folder (mkdir -p DIR && ln -s /path/to/*.gguf DIR/) and pass "
+             "link the .gguf files into a writable folder (" + ("mklink /H DIR\\<file> <file>, for each file" if WIN
+                                                                else "mkdir -p DIR && ln -s /path/to/*.gguf DIR/") +
+             ") and pass "
              "--gguf-dir DIR")
     say("  Writing the index of every tensor, the small float weights (about 1 GB) and the tokenizer; the experts")
     say("  stay in the GGUF files (a few minutes) ...")
@@ -684,14 +772,14 @@ def fetch(url: str, dst: Path, want: str | None) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if shutil.which("curl"):
         if run(["curl", "-L", "--fail", "--retry", "5", "-C", "-", "-o", str(dst), url], check=False).returncode != 0:
-            fail(f"the download of {dst.name} stopped (the reason is above)", "run ./maya.sh --setup again: it "
+            fail(f"the download of {dst.name} stopped (the reason is above)", f"run {ME} --setup again: it "
                                                                               "continues where it stopped")
     else:
         S.download(url, dst)
     if want and not sha256_ok(dst, want):
         dst.unlink(missing_ok=True)
         fail(f"{dst.name}: the sha256 does not match the published one (the file was removed)",
-             "run ./maya.sh --setup again to download it again")
+             f"run {ME} --setup again to download it again")
 
 
 def compile_vision(pc, meta, llama: Path, src: str) -> bool:
@@ -716,8 +804,8 @@ def compile_vision(pc, meta, llama: Path, src: str) -> bool:
         conf.append(f"-DCMAKE_CUDA_HOST_COMPILER={shutil.which(meta['host_compiler']) or meta['host_compiler']}")
     jobs = max(2, min((os.cpu_count() or 4) // 2, int(mem_gb()[0] // 4) or 2))
     say("  Compiling the vision encoder (llama.cpp's image library with ggml's CUDA kernels: 10-20 minutes, once) ...")
-    if run(conf, check=False).returncode != 0 or \
-            run([cmake, "--build", str(VBUILD), "--target", "strata-vision", "-j", str(jobs)], check=False).returncode != 0:
+    if cmake_steps(conf, [cmake, "--build", str(VBUILD), "--target", "strata-vision", "-j", str(jobs)], None,
+                   "build-maya-vision.bat"):
         return False
     VSTAMP.write_text(json.dumps({"src": src, "archs": archs, "llama": str(llama),
                                   "date": time.strftime("%Y-%m-%d %H:%M")}, indent=1), encoding="utf-8")
@@ -745,9 +833,9 @@ def vision_step(a, pc, meta, llama: Path, d: Path, quant: str) -> dict | None:
         say(f"  The vision encoder's files ({m['download_gb']:.2f} GB) from https://huggingface.co/"
             f"{MODELS[quant]['repo']} (folder {m['folder']}/), into {vd}:")
         for p in missing:
-            say("    curl -L --fail -C - -o " + shlex.quote(str(p)) + " " + src_url[p])
+            say("    " + shell_join(["curl", "-L", "--fail", "-C", "-", "-o", str(p), src_url[p]]))
         if not (a.download_model or a.yes) and ask("  Download them now? (y/n)", ["y", "n"], "y", False) != "y":
-            warn("not downloaded: the model reads text only (./maya.sh --setup asks again)")
+            warn(f"not downloaded: the model reads text only ({ME} --setup asks again)")
             return None
         for p in missing:
             fetch(src_url[p], p, m["sha256"].get(p.name))
@@ -758,7 +846,7 @@ def vision_step(a, pc, meta, llama: Path, d: Path, quant: str) -> dict | None:
             and set(meta.get("archs") or pc["archs"]) <= set(vmeta.get("archs", []))):
         if not compile_vision(pc, meta, llama, src):
             warn("the vision encoder did not compile (the reason is above): the model reads text only - "
-                 "./maya.sh --setup --rebuild tries again")
+                 f"{ME} --setup --rebuild tries again")
             return None
     ok(f"vision encoder: {VEXE}")
     return {"exe": str(VEXE), "mmproj": str(files["mmproj"]), "model": str(files["vocab"]), "gpu": True}
@@ -776,9 +864,14 @@ def parse_env(items) -> dict:
 
 
 def write_run_script(cfg_path: Path, port: int) -> Path:
-    script = ROOT / f"run-{cfg_path.stem}.sh"
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port)]
+    if WIN:
+        script = ROOT / f"run-{cfg_path.stem}.bat"
+        script.write_text(f'@echo off\r\nrem starts the Project Maya dashboard and API (written by maya.py; {ME} does '
+                          f'the same)\r\ncd /d "{ROOT}" || exit /b 1\r\n{cmdline(cmd)} %*\r\n', encoding="utf-8")
+        return script
+    script = ROOT / f"run-{cfg_path.stem}.sh"
     script.write_text("#!/bin/sh\n# starts the Project Maya dashboard and API (written by maya.py; ./maya.sh does the "
                       "same)\ncd " + shlex.quote(str(ROOT)) + " || exit 1\nexec " + shlex.join(cmd) + ' "$@"\n',
                       encoding="utf-8")
@@ -820,7 +913,7 @@ def start(cfg_path: Path, a) -> int:
     for p, what in ((Path(cfg.get("exe", "")), "the engine"), (pack, "the pack"),
                     (Path(cfg.get("tokenizer", "")) / "vocab.json", "the tokenizer")):
         if p is None or not p.exists():
-            fail(f"{cfg_path.name}: {what} is missing ({p})", "run ./maya.sh --setup to repair it")
+            fail(f"{cfg_path.name}: {what} is missing ({p})", f"run {ME} --setup to repair it")
     cfg_path.touch()                                   # the most recently used model
     refresh_engine(cfg)
     port = a.port or cfg.get("port") or 8080
@@ -834,7 +927,7 @@ def start(cfg_path: Path, a) -> int:
         cmd += ["--api-key", a.api_key]
     if a.gpus or a.gpu is not None:                    # this start only, on these cards
         cmd += ["--gpu", str(a.gpus or a.gpu)]
-    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+    if WIN or os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
         cmd.append("--open")                           # a desktop: the browser opens when the model is ready
     here = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
     say()
@@ -908,7 +1001,7 @@ def main() -> int:
     pc = check_pc(a)                                   # 1
     if a.check:
         say()
-        say("This PC can run Maya. Run ./maya.sh without --check to set it up.")
+        say(f"This PC can run Maya. Run {ME} without --check to set it up.")
         return 0
     step(2, "your choices")                            # 2
     ctx = choose_context(a, prev_ctx)
@@ -928,7 +1021,8 @@ def main() -> int:
     cfg_path = write_config(a, pc, meta, pack, quant, ctx, data, vision)   # 8
     if a.no_start:
         say()
-        say(f"All set. Start it with ./maya.sh (or ./run-{cfg_path.stem}.sh).")
+        say(f"All set. Start it with {ME} (or " + (f"run-{cfg_path.stem}.bat" if WIN else f"./run-{cfg_path.stem}.sh")
+            + ").")
         return 0
     return start(cfg_path, a)
 

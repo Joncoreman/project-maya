@@ -31,7 +31,12 @@
 #include <algorithm>
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX   // windows.h's min/max macros break std::min/std::max in every file that includes this one
+#endif
 #include <windows.h>
 #else
 #include <fcntl.h>

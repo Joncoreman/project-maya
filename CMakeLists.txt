@@ -75,7 +75,14 @@ if(STRATA_ENABLE_CUDA)
     endif()
   endforeach()
   message(STATUS "Strata: CUDA enabled, arch ${CMAKE_CUDA_ARCHITECTURES}")
-  set(_strata_gpu_runtime_target CUDA::cudart)
+  # CMake links CUDA code with the static runtime (CMAKE_CUDA_RUNTIME_LIBRARY's default); on Windows the same runtime
+  # must be named here too - MSVC's linker refuses cudart_static.lib and cudart.lib (the DLL's) in one program,
+  # where Linux's takes the first of the duplicates
+  if(WIN32)
+    set(_strata_gpu_runtime_target CUDA::cudart_static)
+  else()
+    set(_strata_gpu_runtime_target CUDA::cudart)
+  endif()
   set(_strata_gpu_blas_target CUDA::cublas)
   set(_strata_gpu_include_directories ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 elseif(STRATA_ENABLE_HIP)

@@ -125,7 +125,7 @@ DenseBufs carve_dense(Carve& c, size_t T, const Glm5Geometry& g) {
 
 // the MoE runs on the WHOLE chunk (every expert's weights are read once per chunk); the shared expert in sub-batches
 struct MoeBufs {
-    float *logits, *rw, *H, *OUT;
+    float *logits, *rw, *H, *OUTP;
     float *sh_g, *sh_u;
     uint16_t* sh16;
     int *ids, *rank, *counts, *base, *row_tok, *pos, *bounds;
@@ -147,7 +147,7 @@ MoeBufs carve_moe(Carve& c, size_t T, const Glm5Geometry& g) {
     b.Xq = c.take<uint8_t>(mmq::q8_bytes((int64_t) rows, g.n_embd));
     b.H = c.take<float>(rows * g.n_ff_exp);
     b.Hq = c.take<uint8_t>(mmq::q8_bytes((int64_t) rows, g.n_ff_exp));
-    b.OUT = c.take<float>(rows * g.n_embd);   // each set's gate/up rows live in its own OUT rows until the down product
+    b.OUTP = c.take<float>(rows * g.n_embd);   // each set's gate/up rows live in its own OUTP rows until the down product
     const size_t ts = std::min<size_t>(T, kSub);
     b.sh_g = c.take<float>(ts * FF);
     b.sh_u = c.take<float>(ts * FF);
@@ -1132,7 +1132,7 @@ bool Glm5Model::prefill_half(int64_t p0, int T, std::string& err, const int32_t*
                                  int max_rows) {
             if (nrows <= 0) return;
             mmq::quantize(S->x, M.row_tok + r0, M.Xq, Ly.gu_type, E, E, nrows, s);
-            float* GU = M.OUT + (size_t) r0 * E;   // 2 * n_ff == n_embd: the set's own OUT rows hold its gate/up
+            float* GU = M.OUTP + (size_t) r0 * E;   // 2 * n_ff == n_embd: the set's own OUTP rows hold its gate/up
             mmq::Product gu;
             gu.w = wbase;
             gu.type = Ly.gu_type;
@@ -1162,7 +1162,7 @@ bool Glm5Model::prefill_half(int64_t p0, int T, std::string& err, const int32_t*
             dn.ids = S->iota;
             dn.total_rows = nrows;
             dn.max_rows = max_rows;
-            dn.dst = M.OUT + (size_t) r0 * E;
+            dn.dst = M.OUTP + (size_t) r0 * E;
             dn.ld_dst = E;
             S->mq->run(dn, s);
         };
@@ -1205,7 +1205,7 @@ bool Glm5Model::prefill_half(int64_t p0, int T, std::string& err, const int32_t*
         // the layer's whole pool partition (the light ones empty there), while the copy stream stages
         if (n_light > 0 &&
             !gf::rows_experts(Ly.gu_type, Ly.d_type, P.base, P.stride, Ly.down_off, M.bounds + kLightOff, n_light,
-                              M.row_tok, S->x, T, E, nff, g.swiglu_exp, rows_mmq, rows_res, M.Xq, M.Hq, M.OUT, E, s)) {
+                              M.row_tok, S->x, T, E, nff, g.swiglu_exp, rows_mmq, rows_res, M.Xq, M.Hq, M.OUTP, E, s)) {
             err = "glm prefill: the light expert kernels refused the layer's types";
             return false;
         }
@@ -1216,7 +1216,7 @@ bool Glm5Model::prefill_half(int64_t p0, int T, std::string& err, const int32_t*
             const int nl_rows = rows_res - rows_mmq;
             std::vector<float> A((size_t) nl_rows * E), B((size_t) nl_rows * E);
             cudaStreamSynchronize(s);
-            cudaMemcpy(A.data(), M.OUT + (size_t) rows_mmq * E, A.size() * sizeof(float), cudaMemcpyDeviceToHost);
+            cudaMemcpy(A.data(), M.OUTP + (size_t) rows_mmq * E, A.size() * sizeof(float), cudaMemcpyDeviceToHost);
             int* hb = S->h_bounds + 4096;
             int nbc = 0, max_l = 0, li = 0;
             hb[nbc++] = 0;
@@ -1233,7 +1233,7 @@ bool Glm5Model::prefill_half(int64_t p0, int T, std::string& err, const int32_t*
             cudaMemcpy(M.bounds + 4096, hb, (size_t) nbc * sizeof(int), cudaMemcpyHostToDevice);
             run_set(P.base, P.n_main, P.stride, M.bounds + 4096, rows_mmq, nl_rows, max_l);
             cudaStreamSynchronize(s);
-            cudaMemcpy(B.data(), M.OUT + (size_t) rows_mmq * E, B.size() * sizeof(float), cudaMemcpyDeviceToHost);
+            cudaMemcpy(B.data(), M.OUTP + (size_t) rows_mmq * E, B.size() * sizeof(float), cudaMemcpyDeviceToHost);
             double num = 0, den = 0, worst = 0;
             for (int r = 0; r < nl_rows; ++r) {
                 double rn = 0, rd = 0;
@@ -1293,7 +1293,7 @@ bool Glm5Model::prefill_half(int64_t p0, int T, std::string& err, const int32_t*
         S->staged_disk += dlist.size();
         S->mark("moe_staged", s);
         dump_row("pf_shexp-" + std::to_string(il), S->ffn, E);
-        gb::moe_combine(M.OUT, M.pos, M.rw, S->ffn, T, K, E, S->ffn, s);
+        gb::moe_combine(M.OUTP, M.pos, M.rw, S->ffn, T, K, E, S->ffn, s);
         S->mark("combine", s);
         dump_row("ffn_out-" + std::to_string(il), S->ffn, E);
     }
