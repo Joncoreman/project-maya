@@ -1,9 +1,9 @@
 # Changelog
 
-Every release is on GitHub (Releases) with these notes. Update: `git pull`, then `./setup.sh` (Windows:
+Every release is on GitHub (Releases) with these notes; every published change moves the last number. Update: `git pull`, then `./setup.sh` (Windows:
 `START-MAYA.bat`) - it recompiles only what changed and starts.
 
-## v1.3.0 - 2026-10-08
+## v1.0.4 - 2026-10-08
 
 Faster prefill again (how fast Maya reads your prompt), and more room for experts at long context.
 
@@ -11,14 +11,14 @@ Faster prefill again (how fast Maya reads your prompt), and more room for expert
   positions) now runs on the GPU's tensor cores, with the next positions loaded while the current ones compute - FP16
   operands with F32 accumulation, as flash attention (within ~1e-3 of before). RTX 20-series cards keep the previous
   kernel automatically. Prefill on 2x Tesla V100 32 GB, prompts of 2k / 8k / 16k / 30k tokens: 273 / 428 / 487 / 506
-  -> 286 / 469 / 538 / 561 tokens/s (since v1.1.0: +19% / +42% / +56%). On one of those GPUs: 8k-token prompt 226 ->
+  -> 286 / 469 / 538 / 561 tokens/s (since v1.0.1: +19% / +42% / +56%). On one of those GPUs: 8k-token prompt 226 ->
   243 tokens/s.
 - **The attention cache in FP16:** half the memory, so more of the GPU holds experts - at the default 32K context
   0.66 -> 0.47 GB a GPU, at 128K about 0.8 GB more for experts on each GPU (faster decode at long context).
 - Quality: the same long texts scored before and after (6,000 tokens read, the next 400 scored) differ by +0.8% in
   likelihood, less than two runs of the same engine differ from each other (+1.4%) - no measurable change.
 
-## v1.2.1 - 2026-10-07
+## v1.0.3 - 2026-10-07
 
 A one-command report for problems and speeds: `./maya.sh --report` (Windows: `START-MAYA.bat --report`).
 
@@ -27,7 +27,7 @@ A one-command report for problems and speeds: `./maya.sh --report` (Windows: `ST
   the SSD, and where each token's time goes. Attach it when you report a problem or a speed, so the engine can be
   tuned for your machine. Nothing is sent anywhere; your home folder shows as `~` and no API key is included.
 
-## v1.2.0 - 2026-10-07
+## v1.0.2 - 2026-10-07
 
 Faster prefill (how fast Maya reads your prompt): up to 46% on two GPUs and up to 2x on one.
 
@@ -41,7 +41,7 @@ Faster prefill (how fast Maya reads your prompt): up to 46% on two GPUs and up t
   Sponsor button on GitHub).
 - README: how Maya grew out of Strata; exported chats are named `maya-chat-*.md`.
 
-## v1.1.0 - 2026-10-07
+## v1.0.1 - 2026-10-07
 
 - **Windows (experimental):** `START-MAYA.bat` sets Maya up the way `./maya.sh` does on Linux - Python, the
   engine and the image encoder compiled with Visual Studio 2022 Build Tools and CUDA 12.8, the model download, the
