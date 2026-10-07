@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Project Maya (working name) - set up and start GLM-5.3-Flash on your own NVIDIA GPU(s).  Linux.
+"""Project Maya - set up and start GLM-5.3-Flash on your own NVIDIA GPU(s).  Linux.
 
     ./maya.sh                 the first run sets everything up and starts the dashboard; later runs just start it
     ./maya.sh --setup         set up again (other GPUs, another context length, another model folder)
