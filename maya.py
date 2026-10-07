@@ -980,7 +980,9 @@ def main() -> int:
     ap.add_argument("--rebuild", action="store_true", help="compile the engine again")
     ap.add_argument("--repack", action="store_true", help="build the pack again")
     a = ap.parse_args()
-    say("Project Maya - GLM-5.3-Flash on your own NVIDIA GPU(s). Built on Strata (MIT) and ggml/llama.cpp (MIT).")
+    version = (HERE / "VERSION").read_text(encoding="utf-8").strip() if (HERE / "VERSION").exists() else "?"
+    say(f"Project Maya v{version} - GLM-5.3-Flash on your own NVIDIA GPU(s). Built on Strata (MIT) and ggml/llama.cpp "
+        "(MIT).")
 
     have = configs()
     setting_up = a.setup or a.check or a.no_start or a.gguf_dir or a.model or a.rebuild or a.repack or a.download_model
