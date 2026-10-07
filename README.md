@@ -35,15 +35,15 @@ Measured with Maya-S through the dashboard. A token is about ¾ of a word.
 - The speed holds with context: the attention's selection step is linear in the context length, so a 60K-token
   conversation keeps answering fast.
 - The first answers after a start are the slowest: the expert caches fill with the experts your conversations use.
-- Single-GPU numbers (1x V100 32 GB, 64 GB RAM) are being measured. Other GPUs should work (see below) but have no
-  numbers yet.
+- Every machine is different: the engine adapts to the GPUs, RAM and SSD it finds, so your speed depends on your
+  hardware. Single-GPU numbers are being measured; tell us what you get on yours.
 
 ## What you need
 
 | | |
 | --- | --- |
-| **GPU** | NVIDIA, compute capability 7.0 or newer (V100 and newer). **24-32 GB of VRAM, or two GPUs** that share the model (each holds half of the layers). Measured: 1 and 2x V100 32 GB. |
-| **RAM** | **64 GB recommended.** It runs with less, but every expert that does not fit in RAM is read from the SSD while it answers, which is slower. |
+| **GPU** | NVIDIA, compute capability 7.0 or newer (V100 and newer); one GPU, or two that share the model (each holds half of the layers). The engine fills whatever VRAM you have with the most-used experts: more VRAM is faster. Measured: 1 and 2x V100 32 GB. |
+| **RAM** | It runs with **32 GB** (the machine in the table above has 30 GB). More RAM keeps more experts close and is faster; what does not fit is read from the SSD while it answers. |
 | **Disk** | **~100 GB free on a fast NVMe SSD** (the model is 90 GB, its pictures encoder 1.1 GB, and the engine reads from the model while it answers). Not a hard disk. |
 | **System** | Linux (x86-64, CPU with AVX2), NVIDIA driver, CUDA toolkit 12.x (CUDA 13 can be used for Turing and newer, but it no longer compiles for Volta/V100), g++, Python 3.10+. Windows and WSL2 are not supported yet ([why](#windows)). |
 

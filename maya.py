@@ -251,8 +251,8 @@ def check_pc(a) -> dict:
     ok("using " + " + ".join(gpu_label(g) for g in chosen) +
        (": the model's layers are split across both" if len(chosen) > 1 else ""))
     if vram < 23:
-        warn(f"{vram:.0f} GB of VRAM in total. Maya was measured with one or two 32 GB V100s; below 24 GB it is "
-             "untested: more experts come from RAM and the SSD, so it is slower")
+        say(f"  {vram:.0f} GB of VRAM in total: the engine fills it with the most-used experts and serves the rest from "
+            "RAM and the SSD - give it a try (more VRAM is faster; tell us your speed)")
     problems = []                                      # (what is wrong, how to fix it): all of them at once
 
     nvcc, nv = find_nvcc(archs, a.nvcc)
@@ -299,11 +299,7 @@ def check_pc(a) -> dict:
 
     total, avail = mem_gb()
     msg = f"RAM: {total:.0f} GB, {avail:.0f} GB available now"
-    if total < 60:
-        warn(msg + ". 64 GB is recommended: the engine keeps as many experts in RAM as fit, and every expert that "
-                   "does not fit is read from the SSD while it answers (slower)")
-    else:
-        ok(msg)
+    ok(msg + ("" if total >= 60 else " - it runs with 32 GB; more RAM keeps more experts close and is faster"))
     cpu, avx2, avx512 = S.cpu_info()
     if not avx2:
         problems.append((f"the CPU ({cpu}) has no AVX2", "the engine's CPU expert lane and ggml need AVX2"))

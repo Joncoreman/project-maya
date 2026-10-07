@@ -4,7 +4,7 @@ Two quants of our own, made from the official weights with GSQ/RCO-style methods
 
 | | Maya-S (first) | Maya-L (later) |
 |---|---|---|
-| for | 64 GB RAM + 32 GB VRAM, the whole model in memory | quality first: 128 GB+ machines, or 64+32 streaming from NVMe |
+| for | PCs with a smaller memory pool across RAM and VRAM (it runs from 32 GB of RAM, the rest streamed from the SSD) | quality first: larger memory pools |
 | size | ~80-85 GB (experts ~74-78 GB) | ~135-145 GB (~3.5 bits a weight) |
 | quality target | as close to the FP8 model as ~2 bits allow; no loops | KL <= 0.05 against the FP8 model |
 | compare against | the FP8 model (Z.ai's release) | the FP8 model (Z.ai's release) |
