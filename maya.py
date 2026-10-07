@@ -64,8 +64,8 @@ HF = "https://huggingface.co/{repo}/resolve/{revision}/{folder}/{file}"
 # vision tower, and the tokenizer it reads its markers with).
 MODELS = {
     "Maya-S-v2-IQ2_XXS": {
-        "about": "Project Maya's compact quant, v2: error-feedback-rounded IQ2_XXS gate/up experts, IQ2_S/IQ3_XXS "
-                 "down projections, Q6_K attention, the MTP draft block, made from Z.ai's FP8 release",
+        "about": "Maya-S, Project Maya's compact quant: error-feedback-rounded IQ2_XXS gate/up experts, "
+                 "IQ2_S/IQ3_XXS down projections, Q6_K attention, the MTP draft block, made from Z.ai's FP8 release",
         "repo": "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "revision": "main", "folder": "Maya-S-v2-IQ2_XXS",
         "file": "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-{i:05d}-of-{n:05d}.gguf", "shards": 3, "download_gb": 96.5,
         "sha256": {
@@ -75,23 +75,6 @@ MODELS = {
                 "2d65d88a69f8dc124c8d24bd33b33161ddab218918b4253ad4f500aeede84df5",
             "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00003-of-00003.gguf":
                 "a6a981c4fee7a53d78bdbd97d8f465d48ddf439cf938ff90617f395e0351b5a6"},
-        "vision": {
-            "folder": "vision", "mmproj": "mmproj-GLM-5.3-Flash-F16.gguf", "vocab": "GLM-5.3-Flash-vocab.gguf",
-            "download_gb": 1.14,
-            "sha256": {"mmproj-GLM-5.3-Flash-F16.gguf":
-                           "3627575df16bd152db0f3fd7e488d270b33f3a9e6c7fa3b1b8ac381faafde882",
-                       "GLM-5.3-Flash-vocab.gguf":
-                           "8f53cb1bd2e631c14ef413e3284735d9e53f3c508d07a6f609e705b487105912"}}},
-    "Maya-S-IQ2_XXS": {
-        "about": "Project Maya's compact quant, v1: 6 GB smaller than v2, a little further from the original - "
-                 "error-feedback-rounded IQ2_XXS experts, Q6_K attention, the MTP draft block",
-        "repo": "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "revision": "main", "folder": "Maya-S-IQ2_XXS",
-        "file": "GLM-5.3-Flash-Maya-S-IQ2_XXS-{i:05d}-of-{n:05d}.gguf", "shards": 2, "download_gb": 90.1,
-        "sha256": {
-            "GLM-5.3-Flash-Maya-S-IQ2_XXS-00001-of-00002.gguf":
-                "d657bb8acf3a6ab18c02956002945271918f2385be6a5eb63ada3af2b833f197",
-            "GLM-5.3-Flash-Maya-S-IQ2_XXS-00002-of-00002.gguf":
-                "bc57ef45d57b7eccde27a78ace9ff74535aac733d816bbc55704c21bb7b63665"},
         "vision": {
             "folder": "vision", "mmproj": "mmproj-GLM-5.3-Flash-F16.gguf", "vocab": "GLM-5.3-Flash-vocab.gguf",
             "download_gb": 1.14,
