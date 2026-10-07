@@ -14,6 +14,7 @@
 #define GGML_COMMON_DECL_CUDA
 #define GGML_COMMON_IMPL_CUDA
 #include "ggml-common.h"
+#include "dsa_topk.cuh"
 
 #include <algorithm>
 #include <atomic>
@@ -1453,24 +1454,11 @@ __global__ void __launch_bounds__(256) dsa_score_kernel(const float* __restrict_
 
 __global__ void __launch_bounds__(1024) dsa_select_kernel(const float* __restrict__ score, int n_vis, int kpool,
                                                           int top_pools, int n_sel, int pos, int* __restrict__ cells) {
-    extern __shared__ float s_sc[];
-    const bool in_smem = n_vis <= 12288;
     for (int i = threadIdx.x; i < n_sel; i += blockDim.x) cells[i] = -1;
-    if (in_smem)
-        for (int i = threadIdx.x; i < n_vis; i += blockDim.x) s_sc[i] = score[i];
     __syncthreads();
-    const float* sc = in_smem ? s_sc : score;
-    for (int p = threadIdx.x; p < n_vis; p += blockDim.x) {
-        const float v = sc[p];
-        int rank = 0;
-        for (int q = 0; q < n_vis; ++q) {
-            const float u = sc[q];
-            rank += u > v ? 1 : 0;
-            rank += (q < p && u == v) ? 1 : 0;
-        }
-        if (rank < top_pools)
-            for (int m = 0; m < kpool; ++m) cells[rank * kpool + m] = p * kpool + m;
-    }
+    // the top pools in rank order (score descending, ties by the lower index), O(n_vis) - src/kernels/cuda/dsa_topk.cuh
+    if (n_vis > 0) strata::kernels::dsa::select_top_pools(score, n_vis, min(top_pools, n_vis), kpool, cells);
+    __syncthreads();
     if (threadIdx.x == 0) {
         for (int m = 0; m < kpool - 1; ++m) {
             const int cell = n_vis * kpool + m;
@@ -2764,8 +2752,7 @@ void dsa_score(const float* iq, const float* pooled, const float* iw, int key_di
 
 void dsa_select(const float* score, int n_vis, int kpool, int top_pools, int n_sel, int pos, int* cells,
                 cudaStream_t s) {
-    const size_t smem = n_vis <= 12288 ? (size_t) n_vis * sizeof(float) : 0;
-    dsa_select_kernel<<<1, 1024, smem, s>>>(score, n_vis, kpool, top_pools, n_sel, pos, cells);
+    dsa_select_kernel<<<1, 1024, 0, s>>>(score, n_vis, kpool, top_pools, n_sel, pos, cells);
     launch_check("dsa_select");
 }
 

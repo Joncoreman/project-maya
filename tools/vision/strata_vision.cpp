@@ -5,13 +5,19 @@
 // rows at the image's pad tokens and gives them their 2-D M-RoPE positions (see --serve GENI in generate.cpp).
 //
 //   strata-vision --mmproj <mmproj.gguf> --model <text model .gguf, first split> [--gpu] [--threads N]
-//                 [--max-tokens N]
+//                 [--max-tokens N] [--no-flash-attn] [--no-warmup] [--measure]
+//
+// --measure: load, warm up at the largest picture, print "MEM <bytes> <base> <total>" and end - the GPU memory this
+// encoder needs on this machine (its weights and work buffers; <base> is what the device had in use once this
+// process had its context, which is this process's context when nothing else runs there).  The server measures
+// once, before the model loads, and sizes the memory the model lends the encoder from it.
 //
 // Resident: prints "READY <n_embd>", then per stdin line
 //   ENC <image path> <output path>   ->  "OK <n_tokens> <nx> <ny> <ms>"  or  "ERR <message>"
 //   QUIT
 // The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
 // row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
+#include "ggml-backend.h"
 #include "gguf.h"
 #include "llama.h"
 #include "mtmd.h"
@@ -50,6 +56,9 @@ int main(int argc, char** argv) {
     std::string mmproj, model;
     bool gpu = false;
     int threads = 0, max_tokens = 0;
+    bool no_fa = false;   // the attention in full precision (flash attention keeps K/V in F16)
+    bool warm = true;     // --no-warmup: started on demand into memory set aside for it (serve/server.py)
+    bool measure = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -61,6 +70,9 @@ int main(int argc, char** argv) {
         else if (a == "--gpu") gpu = true;
         else if (a == "--threads") threads = std::atoi(next().c_str());
         else if (a == "--max-tokens") max_tokens = std::atoi(next().c_str());
+        else if (a == "--no-flash-attn") no_fa = true;
+        else if (a == "--no-warmup") warm = false;
+        else if (a == "--measure") measure = true;
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     if (mmproj.empty() || model.empty()) {
@@ -71,6 +83,16 @@ int main(int argc, char** argv) {
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
+    // --measure: the first GPU's free memory now (this process's context exists from the first query on) ...
+    ggml_backend_dev_t mdev = nullptr;
+    size_t free0 = 0, total0 = 0;
+    if (measure) {
+        warm = true;
+        for (size_t i = 0; i < ggml_backend_dev_count() && mdev == nullptr; ++i)
+            if (ggml_backend_dev_type(ggml_backend_dev_get(i)) == GGML_BACKEND_DEVICE_TYPE_GPU)
+                mdev = ggml_backend_dev_get(i);
+        if (mdev != nullptr) ggml_backend_dev_memory(mdev, &free0, &total0);
+    }
 
     llama_model_params mp = llama_model_default_params();
     mp.vocab_only = true;
@@ -83,6 +105,7 @@ int main(int argc, char** argv) {
     cp.warmup = false;
     if (threads > 0) cp.n_threads = threads;
     if (max_tokens > 0) cp.image_max_tokens = max_tokens;
+    if (no_fa) cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     mtmd_context* ctx = mtmd_init_from_file(mmproj.c_str(), text, cp);
     if (!ctx || !mtmd_support_vision(ctx)) {
         std::printf("ERR cannot load the vision encoder %s\n", mmproj.c_str());
@@ -103,7 +126,7 @@ int main(int argc, char** argv) {
     // real picture.  The server starts this process before the engine, so the engine sizes its expert cache from
     // what is really left; allocating ~1 GB later, on a GPU the engine has filled, made Windows page GPU memory and
     // the engine crawl to a standstill.  (A square image well above any cap; mtmd scales it to the token limit.)
-    {
+    if (warm) {
         const uint32_t side = 2048;
         std::vector<unsigned char> rgb((size_t) side * side * 3, 128);
         mtmd_bitmap* bm = mtmd_bitmap_init(side, side, rgb.data());
@@ -122,6 +145,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata-vision: warmed up at %d image tokens\n", warm_tokens);
         mtmd_input_chunks_free(chunks);
         if (bm) mtmd_bitmap_free(bm);
+    }
+    if (measure) {   // ... and after the weights and the largest picture's work buffers
+        size_t free1 = 0, total1 = 0;
+        if (mdev != nullptr) ggml_backend_dev_memory(mdev, &free1, &total1);
+        std::printf("MEM %zu %zu %zu\n", free0 > free1 ? free0 - free1 : (size_t) 0, total0 - free0, total0);
+        std::fflush(stdout);
+        mtmd_free(ctx);
+        llama_model_free(text);
+        return 0;
     }
     std::printf("READY %d\n", n_embd);
     std::fflush(stdout);
@@ -154,7 +186,9 @@ int main(int argc, char** argv) {
             const int n = (int) mtmd_input_chunk_get_n_tokens(ichunk);
             // the grid from the decoder positions (nx/ny getters are deprecated): x and y of the last token
             const mtmd_decoder_pos last = mtmd_image_tokens_get_decoder_pos(it, 0, (size_t) n - 1);
-            const int nx = (int) last.x + 1, ny = (int) last.y + 1;
+            // a text model without M-RoPE (GLM-5.3: its image tokens take no positions) has no grid: one row
+            const bool grid = mtmd_decode_use_mrope(ctx);
+            const int nx = grid ? (int) last.x + 1 : n, ny = grid ? (int) last.y + 1 : 1;
             if (nx * ny != n) err = "the image grid is not rectangular (" + std::to_string(n) + " tokens)";
             const float* embd = mtmd_get_output_embd(ctx);
             FILE* f = err.empty() ? std::fopen(out.c_str(), "wb") : nullptr;

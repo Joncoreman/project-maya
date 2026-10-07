@@ -23,6 +23,7 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/sampler.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cuda_runtime.h>
 #include <condition_variable>
@@ -140,6 +141,21 @@ public:
     /// The position the next token will occupy (tokens consumed since the last reset).
     int64_t position() const { return pos_; }
     const Glm5Geometry& geometry() const { return g_; }
+    /// The next decoded token is `tok` instead of the sampled one (once; -1 clears): the serve loop's thinking budget
+    /// closes the reasoning block this way inside the running decode - the speculative loop takes it as the truth
+    /// for its position, like a rejected draft, so nothing is read again.
+    void force_next(int32_t tok) { force_tok_ = tok; }
+    /// The on-demand vision encoder (serve VLEND / VRECLAIM; STRATA_GLM_VISION_LEND_MB at load): the first GPU's
+    /// lendable pool tail is emptied and freed so the encoder's process can use that VRAM, and allocated again
+    /// once it has ended (false while the memory is still taken).  vision_lend_bytes(): 0 when unavailable.
+    bool vision_lend(size_t& bytes, std::string& err);
+    bool vision_reclaim(std::string& err);
+    size_t vision_lend_bytes() const;
+    int32_t forced(int32_t sampled) {
+        const int32_t t = force_tok_ >= 0 ? force_tok_ : sampled;
+        force_tok_ = -1;
+        return t;
+    }
 
 private:
     bool step(int32_t token, std::string& err);   // one token through all layers
@@ -292,6 +308,7 @@ public:
     bool fast_mode_ = false;                               // decided at load (STRATA_GLM_SLOW=1 turns it off)
     bool host_logits_ = true;
     int last_tok_ = -1;                                    // the greedy argmax of the last fast forward
+    int32_t force_tok_ = -1;                               // force_next()
     std::map<std::string, const uint16_t*> w16_;           // the pack's big BF16 rows, kept BF16 (fast mode)
     bool fast_setup(std::string& err);
     void fast_destroy();
@@ -324,6 +341,22 @@ public:
     /// returns the block's greedy proposal for p + 2 (-1: no draft block).  Fills the block's caches at p.
     int mtp_draft(int32_t next_tok, std::string& err);
     bool has_mtp() const;
+    /// Images (the vision path): rows of n_embd floats that stand in for the token embeddings at these absolute
+    /// positions - the prompt's <|image|> tokens, in order; an empty call clears them.  Read wherever a token is
+    /// embedded (the prompt path and the token path); the draft block keeps the token embedding (drafts only).
+    void set_image_rows(std::vector<int64_t> positions, std::vector<float> rows) {
+        img_pos_ = std::move(positions);
+        img_rows_ = std::move(rows);
+    }
+    const float* image_row(int64_t p) const {
+        const auto it = std::lower_bound(img_pos_.begin(), img_pos_.end(), p);
+        if (it == img_pos_.end() || *it != p) return nullptr;
+        return img_rows_.data() + (size_t) (it - img_pos_.begin()) * (size_t) g_.n_embd;
+    }
+private:
+    std::vector<int64_t> img_pos_;                         // ascending
+    std::vector<float> img_rows_;
+public:
     /// The pipelined speculative decode (src/core/glm_fast_path.cu): needs a two-half split whose tail carries the
     /// NextN block.  After the prompt's last forward(), emits up to max_new tokens (emit returns false to stop) - the
     /// same tokens the token-at-a-time loop would produce for the same samples.  The sequence state is left for the
@@ -354,6 +387,9 @@ public:
     void prefill_lend();                                   // the tail slots -> the prompt path (drops their experts)
     void prefill_return();                                 // ... and back to the expert pool
     void prefill_destroy();
+    void lend_tail(size_t limit, uint64_t& moved, uint64_t& dropped);   // the tail's slots below xpool + limit -> kLent
+    bool vis_lend_ok_ = false;                             // this half's tail can go to the vision encoder
+    bool vis_lent_ = false;                                // ... and is with it now (freed)
     bool prefill_half(int64_t p0, int T, std::string& err,
                       const int32_t* next_ids = nullptr);   // this half's layers over a chunk (rows in pf_->R)
     int32_t prefill_next_ = -1;                            // the token after the prompt's last prefilled position

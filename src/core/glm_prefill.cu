@@ -476,18 +476,104 @@ void Glm5Model::prefill_lend() {
     PrefillState* S = pf_;
     if (F == nullptr || S == nullptr || S->lent) return;
     cudaSetDevice(dev_);
+    lend_tail(S->need, S->moved, S->dropped);
+    // the borrowed memory holds expert bytes: what the prompt path reads before writing is set up again
+    mmq::iota(S->iota, (int64_t) S->T_bound * g_.n_exp_used, F->cs);
+    for (int b = 0; b < PrefillState::NG; ++b) cudaEventRecord(S->ev_free[b], F->cs);
+    cudaStreamSynchronize(F->cs);
+    S->lent = true;
+}
+
+// The on-demand vision encoder (serve VLEND): the whole tail is emptied the same way and its memory freed, so the
+// encoder's process can allocate it; the prompt path waits (token by token) until vision_reclaim gives it back.
+bool Glm5Model::vision_lend(size_t& bytes, std::string& err) {
+    FastState* F = fast_;
+    bytes = 0;
+    if (F == nullptr || !vis_lend_ok_) {
+        err = "this engine has no pool tail to lend to the vision encoder";
+        return false;
+    }
+    if (vis_lent_) {
+        bytes = F->xpool_bytes;
+        return true;
+    }
+    cudaSetDevice(dev_);
+    uint64_t moved = 0, dropped = 0;
+    lend_tail(F->xpool_bytes, moved, dropped);
+    cudaStreamSynchronize(F->cs);
+    cudaStreamSynchronize(F->copy);
+    cudaFree(F->xpool);
+    F->xpool = nullptr;
+    for (auto& P : F->lp) P.xbase = nullptr;
+    vis_lent_ = true;
+    bytes = F->xpool_bytes;
+    std::fprintf(stderr, "glm fast: CUDA%d %.2f GB lent to the vision encoder (%llu experts moved to colder slots, "
+                         "%llu dropped)\n", dev_, (double) bytes / 1073741824.0, (unsigned long long) moved,
+                 (unsigned long long) (dropped - moved));
+    return true;
+}
+
+size_t Glm5Model::vision_lend_bytes() const { return fast_ != nullptr && vis_lend_ok_ ? fast_->xpool_bytes : 0; }
+
+// ... and back once the encoder has ended: the tail is allocated again (false while the memory is still taken) and
+// its slots are free - the decode's misses refill them
+bool Glm5Model::vision_reclaim(std::string& err) {
+    FastState* F = fast_;
+    if (F == nullptr || !vis_lent_) return true;
+    cudaSetDevice(dev_);
+    if (cudaMalloc(&F->xpool, F->xpool_bytes) != cudaSuccess) {
+        cudaGetLastError();
+        F->xpool = nullptr;
+        err = "the pool's tail is not free yet";
+        return false;
+    }
+    uint8_t* b = F->xpool;
+    for (int il = l0_; il < lt_; ++il) {
+        if (!F->L[(size_t) il].moe) continue;
+        auto& P = F->lp[(size_t) il];
+        P.xbase = b;
+        b += (size_t) (P.n - P.n_main) * P.stride;
+    }
+    if (pf_ != nullptr && !prefill_bind(F->xpool, F->xpool_bytes, err)) return false;
+    {
+        std::lock_guard<std::mutex> lk(F->mu);
+        for (int il = l0_; il < lt_; ++il) {
+            auto& P = F->lp[(size_t) il];
+            for (int s = P.n_main; s < P.n; ++s)
+                if (P.st[(size_t) s] == FastState::kLent) P.st[(size_t) s] = FastState::kFree;
+        }
+    }
+    vis_lent_ = false;
+    std::fprintf(stderr, "glm fast: CUDA%d the vision encoder's %.2f GB are back in the expert pool\n", dev_,
+                 (double) F->xpool_bytes / 1073741824.0);
+    return true;
+}
+
+// The tail's slots below xpool + limit leave the decode: a resident expert takes the slot of a colder main-slot
+// resident (a device copy) or goes; a spare there leaves the spare table; the slots are kLent after this.
+void Glm5Model::lend_tail(size_t limit, uint64_t& moved, uint64_t& dropped) {
+    FastState* F = fast_;
     fast_boundary();                   // finished promotions and demotions go live (the plan reads the tables)
     cudaStreamSynchronize(F->copy);    // every demotion issued so far has read its slot
     const int NE = g_.n_expert;
     {
         std::lock_guard<std::mutex> lk(F->mu);
         int nu = 0;
+        const auto flush = [&]() {
+            if (nu == 0) return;
+            cudaMemcpyAsync(F->upd_key_d, F->upd_key_h, (size_t) nu * sizeof(int), cudaMemcpyHostToDevice, F->cs);
+            cudaMemcpyAsync(F->upd_val_d, F->upd_val_h, (size_t) nu * sizeof(unsigned long long),
+                            cudaMemcpyHostToDevice, F->cs);
+            gf::tab_update(F->tab, F->upd_key_d, F->upd_val_d, nu, F->cs);
+            cudaStreamSynchronize(F->cs);   // the host buffers are reused after it ran
+            nu = 0;
+        };
+        // (every key is edited at most once here, so a batch never carries two values for one key)
         const auto upd = [&](size_t k, unsigned long long v) {
-            if (nu < FastState::kMaxUpd) {
-                F->upd_key_h[nu] = (int) k;
-                F->upd_val_h[nu] = v;
-                ++nu;
-            }
+            if (nu == FastState::kMaxUpd) flush();
+            F->upd_key_h[nu] = (int) k;
+            F->upd_val_h[nu] = v;
+            ++nu;
         };
         // STRATA_GLM_LEND_DROP=1: drop the lent slots' experts as before (instead of moving them, below)
         static const bool lend_drop = getenv("STRATA_GLM_LEND_DROP") != nullptr;
@@ -507,8 +593,8 @@ void Glm5Model::prefill_lend() {
             });
             size_t ci = 0;
             for (int s = P.n_main; s < P.n; ++s) {
-                // a slot past the bytes this prompt's layout uses stays with the decode
-                if (P.slot_ptr(s) >= S->region + S->need) continue;
+                // a slot past the bytes this lending uses (a prompt's layout) stays with the decode
+                if (P.slot_ptr(s) >= F->xpool + limit) continue;
                 char& st = P.st[(size_t) s];
                 if (st == FastState::kResident && P.key[(size_t) s] >= 0) {
                     const int key = il * NE + P.key[(size_t) s];
@@ -524,13 +610,13 @@ void Glm5Model::prefill_lend() {
                         F->slot_of[(size_t) key] = v;
                         P.key[(size_t) v] = P.key[(size_t) s];
                         P.tick[(size_t) v] = P.tick[(size_t) s];
-                        ++S->moved;
+                        ++moved;
                     } else {
                         upd(F->tab_key((size_t) key), 0ull);
                         F->slot_of[(size_t) key] = -1;
                         F->left[(size_t) key] = 3;
                     }
-                    ++S->dropped;
+                    ++dropped;
                     ++F->diag_lend;
                 } else if (st == FastState::kSpare) {
                     for (int j = 0; j < gf::kSpares; ++j)
@@ -543,18 +629,8 @@ void Glm5Model::prefill_lend() {
                 st = FastState::kLent;
             }
         }
-        if (nu > 0) {
-            cudaMemcpyAsync(F->upd_key_d, F->upd_key_h, (size_t) nu * sizeof(int), cudaMemcpyHostToDevice, F->cs);
-            cudaMemcpyAsync(F->upd_val_d, F->upd_val_h, (size_t) nu * sizeof(unsigned long long),
-                            cudaMemcpyHostToDevice, F->cs);
-            gf::tab_update(F->tab, F->upd_key_d, F->upd_val_d, nu, F->cs);
-        }
+        flush();
     }
-    // the borrowed memory holds expert bytes: what the prompt path reads before writing is set up again
-    mmq::iota(S->iota, (int64_t) S->T_bound * g_.n_exp_used, F->cs);
-    for (int b = 0; b < PrefillState::NG; ++b) cudaEventRecord(S->ev_free[b], F->cs);
-    cudaStreamSynchronize(F->cs);
-    S->lent = true;
 }
 
 // ... and back: the slots are free again; the decode's boundaries hand them out as spares (misses refill them)
@@ -1322,8 +1398,8 @@ bool Glm5Model::prefill(const std::vector<int32_t>& tokens, std::string& err, in
     err.clear();
     prefill_next_ = next_token;
     if (fast_ == nullptr || tokens.empty()) return false;
-    for (Glm5Model* m = this; m != nullptr; m = m->split_next_.get())
-        if (m->pf_ == nullptr || m->fast_ == nullptr) return false;
+    for (Glm5Model* m = this; m != nullptr; m = m->split_next_.get())   // (a tail lent to the vision encoder: the
+        if (m->pf_ == nullptr || m->fast_ == nullptr || m->vis_lent_) return false;   // token path, until it is back)
     // a handful of tokens costs less through the token path (the batched path streams every expert they touch)
     int64_t min_n = 32;
     if (const char* mn = getenv("STRATA_GLM_PREFILL_MIN")) min_n = std::max<int64_t>(1, std::atoll(mn));
@@ -1382,8 +1458,11 @@ bool Glm5Model::prefill_run(const std::vector<int32_t>& tokens, std::string& err
         const int T = chunk_len(c);
         const int64_t i = (int64_t) c * Tc;
         cudaStreamSynchronize(fast_->cs);   // emb_h may still feed the previous chunk's copy
-        for (int t = 0; t < T; ++t)
+        for (int t = 0; t < T; ++t) {
             tt->to_float(pack_emb_src_ + (size_t) tokens[(size_t) (i + t)] * row_b, S->emb_h + (size_t) t * E, E);
+            if (const float* img = image_row(pos_start + i + t))   // an image's row in place of its <|image|> token
+                std::memcpy(S->emb_h + (size_t) t * E, img, (size_t) E * sizeof(float));
+        }
         // the embedding lands in x (free until the first layer's gates write it) and fans out to the 4 streams
         cudaMemcpyAsync(S->x, S->emb_h, (size_t) T * E * sizeof(float), cudaMemcpyHostToDevice, fast_->cs);
         gb::embed_rows(S->x, S->R, T, E, fast_->cs);

@@ -238,8 +238,9 @@ struct Glm5Model::FastState {
     //      device, which may fill it during a token and mark it resident itself) or DRAINING (its old expert
     //      is being demoted to the RAM tier by a D2H; it becomes free when that copy lands).
     enum : char { kFree = 0, kResident = 1, kSpare = 2, kDraining = 3, kLent = 4 };
-    // A layer's slots [0, n_main) are at base, [n_main, n) at xbase: every layer's tail lies in ONE region at the end
-    // of the pool, which the prompt path borrows for its buffers while a prompt runs (those slots are kLent then).
+    // A layer's slots [0, n_main) are at base, [n_main, n) at xbase: every layer's tail lies in ONE region (xpool),
+    // which the prompt path borrows for its buffers while a prompt runs (those slots are kLent then) - and an
+    // on-demand vision encoder while it encodes (the region is freed; xbase is null until it comes back).
     struct LayerPool {
         uint8_t* base = nullptr;
         uint8_t* xbase = nullptr;
@@ -271,6 +272,10 @@ struct Glm5Model::FastState {
     uint8_t* pool = nullptr;
     size_t pool_bytes = 0;
     int64_t pool_slots = 0;
+    // the lendable tail (every layer's slots [n_main, n)) is its own allocation: an on-demand vision encoder can
+    // have that memory while it runs (vision_lend frees it, vision_reclaim allocates it again)
+    uint8_t* xpool = nullptr;
+    size_t xpool_bytes = 0;
     // ---- the RAM tier: pinned host slots per blob size class, holding experts that are NOT in VRAM
     //      (exclusive tiers).  rtab (on the device) points at HOLDING slots only.
     enum : char { kRFree = 0, kRHold = 1, kRRelease = 2, kRDemote = 3, kRNew = 4, kRLoad = 5 };

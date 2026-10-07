@@ -5,6 +5,7 @@
 // would have left up to float rounding - the projections around them (FP16 tensor-core GEMMs instead of q8_1 dot
 // products) are where the two paths really differ, as llama.cpp's batched and one-token paths do.
 #include "strata/kernels/glm_batch.hpp"
+#include "dsa_topk.cuh"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -383,7 +384,6 @@ __global__ void __launch_bounds__(256) dsa_score_kernel(const float* __restrict_
 __global__ void __launch_bounds__(1024) dsa_select_kernel(const float* __restrict__ score, int score_ld, int p0,
                                                           int kpool, int top_pools_max, int tail, int n_sel_max,
                                                           int* __restrict__ cells_all, int* __restrict__ n_sel_out) {
-    extern __shared__ float s_sc[];
     const int t = blockIdx.x;
     const int pos = p0 + t;
     const int n_vis = (pos + 1) / kpool;
@@ -392,28 +392,14 @@ __global__ void __launch_bounds__(1024) dsa_select_kernel(const float* __restric
     int* cells = cells_all + (size_t) t * n_sel_max;
     for (int i = threadIdx.x; i < n_sel; i += blockDim.x) cells[i] = -1;
     if (threadIdx.x == 0) n_sel_out[t] = n_sel;
+    __syncthreads();
     if (n_vis <= top_pools_max) {
-        __syncthreads();
         for (int i = threadIdx.x; i < n_vis * kpool; i += blockDim.x) cells[i] = i;
     } else {
-        const bool in_smem = n_vis <= 12288;
-        const float* srow = score + (size_t) t * score_ld;
-        if (in_smem)
-            for (int i = threadIdx.x; i < n_vis; i += blockDim.x) s_sc[i] = srow[i];
-        __syncthreads();
-        const float* sc = in_smem ? s_sc : srow;
-        for (int p = threadIdx.x; p < n_vis; p += blockDim.x) {
-            const float v = sc[p];
-            int rank = 0;
-            for (int q = 0; q < n_vis; ++q) {
-                const float u = sc[q];
-                rank += u > v ? 1 : 0;
-                rank += (q < p && u == v) ? 1 : 0;
-            }
-            if (rank < top)
-                for (int m = 0; m < kpool; ++m) cells[rank * kpool + m] = p * kpool + m;
-        }
+        // the top pools in rank order, O(n_vis) - src/kernels/cuda/dsa_topk.cuh
+        strata::kernels::dsa::select_top_pools(score + (size_t) t * score_ld, n_vis, top, kpool, cells);
     }
+    __syncthreads();
     if (threadIdx.x == 0 && tail) {
         for (int m = 0; m < kpool - 1; ++m) {
             const int cell = n_vis * kpool + m;
@@ -840,16 +826,7 @@ void dsa_score(const float* iq, const float* pooled, const float* iw, int key_di
 void dsa_select(const float* score, int score_ld, int p0, int kpool, int top_pools_max, int tail, int T,
                 int n_sel_max, int* cells, int* n_sel, cudaStream_t s) {
     if (T <= 0) return;
-    const int max_vis = (p0 + T) / kpool;
-    const size_t smem = max_vis > top_pools_max && max_vis <= 12288 ? (size_t) max_vis * sizeof(float) : 0;
-    static bool attr[16] = {};
-    int dev = 0;
-    cudaGetDevice(&dev);
-    if (dev >= 0 && dev < 16 && !attr[dev]) {
-        cudaFuncSetAttribute(dsa_select_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, 12288 * 4);
-        attr[dev] = true;
-    }
-    dsa_select_kernel<<<T, 1024, smem, s>>>(score, score_ld, p0, kpool, top_pools_max, tail, n_sel_max, cells, n_sel);
+    dsa_select_kernel<<<T, 1024, 0, s>>>(score, score_ld, p0, kpool, top_pools_max, tail, n_sel_max, cells, n_sel);
     check("dsa_select");
 }
 

@@ -6,8 +6,8 @@ Two quants of our own, made from the official weights with GSQ/RCO-style methods
 |---|---|---|
 | for | 64 GB RAM + 32 GB VRAM, the whole model in memory | quality first: 128 GB+ machines, or 64+32 streaming from NVMe |
 | size | ~80-85 GB (experts ~74-78 GB) | ~135-145 GB (~3.5 bits a weight) |
-| quality target | KL vs the original about half of today's UD-IQ1_S; no loops | KL <= 0.05 (the public community 3.5-bit GSQ-RCO is 0.071) |
-| compare against | Unsloth UD-IQ1_S (93 GB file; what we run today) | pfeifferj GSQ-RCO 3.0/3.5-bit (117/137 GB) |
+| quality target | as close to the FP8 model as ~2 bits allow; no loops | KL <= 0.05 against the FP8 model |
+| compare against | the FP8 model (Z.ai's release) | the FP8 model (Z.ai's release) |
 
 ## What we start from
 
@@ -18,10 +18,7 @@ Two quants of our own, made from the official weights with GSQ/RCO-style methods
   4096 x 2048, gate/up/down) plus one shared expert. Attention is 34 KDA (linear) layers and 11 DSA/MLA layers.
   There are mHC 4-stream residuals and one NextN (MTP) layer. Routed experts are 304.4B of the 321B parameters; one
   expert is 25.2M parameters.
-- **Today's UD-IQ1_S mix**:
-  - gate/up: IQ1_S in 28 layers, IQ2_XXS in 14
-  - down: IQ3_XXS in 39 layers, IQ4_XS in 3
-  - experts total ~84 GB; Unsloth's dynamic mix with their imatrix.
+- **The engine's development file** (before Maya's own quants): a 1.6-bit GGUF with experts of ~84 GB.
 
 ## Machines
 
@@ -144,7 +141,8 @@ checks and the loop test. My expectation is that light or no pruning wins and pe
   - long context (16-32k)
 - **Loop test**: 50 long generations at the default sampling (T=1.0, top-p 0.95) and 20 greedy ones. Measures
   repeated n-grams, runs that never end, and broken thinking-block structure.
-- **Task spot checks**, against UD-IQ1_S and the community 3.0/3.5-bit:
+- **Task accuracy against the FP8 model** (zero-shot ARC-Easy/Challenge, HellaSwag, WinoGrande, PIQA the way
+  lm-evaluation-harness scores them: tools/maya_quant/zs_*.py), and spot checks:
   - GSM8K (100)
   - HumanEval subset
   - IFEval subset

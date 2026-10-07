@@ -918,10 +918,11 @@ static int glm_pack_generate(const Options& o) {
         // INFO facts for the server's Monitor tab (strata app): the expert tiers this engine runs with
         const auto st = model.fast_stats();
         std::printf("INFO context=%lld kv=f32 expert_slots=%lld expert_cache_mib=%lld engine_kind=glm-fast experts=%d "
-                    "vram_slots=%lld vram_gb=%.1f ram_slots=%lld ram_gb=%.1f mtp=%d\n",
+                    "vram_slots=%lld vram_gb=%.1f ram_slots=%lld ram_gb=%.1f mtp=%d vision_lend=%zu\n",
                     (long long) o.max_context, (long long) st.pool_slots, (long long) (st.pool_gb * 1024.0),
                     model.geometry().n_expert * (model.geometry().n_layers - model.geometry().dense_lead),
-                    (long long) st.pool_slots, st.pool_gb, (long long) st.ram_slots, st.ram_gb, model.has_mtp() ? 1 : 0);
+                    (long long) st.pool_slots, st.pool_gb, (long long) st.ram_slots, st.ram_gb, model.has_mtp() ? 1 : 0,
+                    model.vision_lend_bytes());
     }
 
     strata::kernels::SamplerParams sp;
@@ -993,10 +994,32 @@ static int glm_pack_generate(const Options& o) {
     };
 
     std::vector<int32_t> snap_tokens;   // the prompt prefix the model's saved state belongs to (conversation reuse)
+    // images (GENI): this request's <|image|> positions and rows, and a hash of the rows the saved state read - the
+    // same tokens with another picture must not reuse it
+    std::vector<int64_t> cur_img_pos;
+    std::vector<float> cur_img_rows;
+    // the thinking budget (GEN keys think_budget=<n> think_end=<id>, the server's run config): a reasoning block still
+    // open after n tokens is closed - the next token is </think> instead of the sampled one - and the answer follows
+    // in the same decode
+    int64_t req_think_budget = 0;
+    int32_t req_think_end = -1;
+    uint64_t snap_img_hash = 1469598103934665603ull;
+    const auto img_hash = [&](size_t len) {
+        uint64_t h = 1469598103934665603ull;   // FNV-1a over the positions and rows inside [0, len)
+        const size_t E = (size_t) model.geometry().n_embd;
+        for (size_t k = 0; k < cur_img_pos.size() && (size_t) cur_img_pos[k] < len; ++k) {
+            const unsigned char* b = (const unsigned char*) (cur_img_rows.data() + k * E);
+            for (size_t j = 0; j < E * sizeof(float); ++j) h = (h ^ b[j]) * 1099511628211ull;
+            h = (h ^ (uint64_t) cur_img_pos[k]) * 1099511628211ull;
+        }
+        return h;
+    };
     const auto run_request = [&](const std::vector<int64_t>& ids, int64_t max_new,
                                  const strata::kernels::SamplerParams& rq_in) -> int {
         strata::kernels::SamplerParams sp = rq_in;   // per request (the server sends sampling keys per GEN)
         stop_req.store(false);
+        model.force_next(-1);
+        bool in_think = req_think_budget > 0 && req_think_end >= 0;
         std::vector<int32_t> prompt;
         prompt.reserve(ids.size());
         for (const int64_t t : ids) {
@@ -1015,6 +1038,7 @@ static int glm_pack_generate(const Options& o) {
         size_t reuse = 0;
         if (model.fast() && !snap_tokens.empty() && snap_tokens.size() < prompt.size() &&
             std::equal(snap_tokens.begin(), snap_tokens.end(), prompt.begin()) &&
+            img_hash(snap_tokens.size()) == snap_img_hash &&
             getenv("STRATA_GLM_NO_REUSE") == nullptr && model.snapshot_restore())
             reuse = snap_tokens.size();
         if (reuse == 0) model.reset();
@@ -1064,8 +1088,12 @@ static int glm_pack_generate(const Options& o) {
         }
         for (size_t i = i_first; i < prompt.size();) {
             if (model.fast() && !snapped && i == prompt.size() - 1) {
-                if (model.snapshot_save()) snap_tokens.assign(prompt.begin(), prompt.end() - 1);
-                else snap_tokens.clear();
+                if (model.snapshot_save()) {
+                    snap_tokens.assign(prompt.begin(), prompt.end() - 1);
+                    snap_img_hash = img_hash(snap_tokens.size());
+                } else {
+                    snap_tokens.clear();
+                }
                 snapped = true;
             }
             size_t chunk = std::min<size_t>(8, prompt.size() - i);
@@ -1093,6 +1121,10 @@ static int glm_pack_generate(const Options& o) {
         const auto on_token = [&](int tok) -> bool {
             std::printf("T %d\n", tok);
             ++produced;
+            if (in_think && (tok == req_think_end || produced >= req_think_budget)) {
+                if (tok != req_think_end) model.force_next(req_think_end);   // the budget: the next token closes it
+                in_think = false;
+            }
             // live expert-tier counters for the server's Monitor (serve/server.py parses STAT lines), every 8 tokens
             if (o.serve && model.fast() && produced % 8 == 0) {
                 const auto sn = model.fast_stats();
@@ -1135,11 +1167,12 @@ static int glm_pack_generate(const Options& o) {
                     finish = "cancel";
                     break;
                 }
-                const int tok = model.sample_token(sp, err);
+                int tok = model.sample_token(sp, err);
                 if (tok < 0) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
+                tok = model.forced(tok);
                 sp.counter += 1;
                 if (!on_token(tok)) break;
                 if (!model.forward({(int32_t) tok}, lg, err)) {
@@ -1154,9 +1187,10 @@ static int glm_pack_generate(const Options& o) {
         // the decode phase's expert-tier counters (the fast path; zeros on the reference path)
         const auto st2 = model.fast_stats();
         const uint64_t d_hits = st2.hits - st1.hits, d_miss = st2.misses - st1.misses;
-        std::printf("DONE %lld %lld %.1f %.1f %s 0 0 %zu %llu %llu\n", (long long) produced,
-                    (long long) prompt.size(), prompt_ms, decode_ms, finish, reuse, (unsigned long long) d_hits,
-                    (unsigned long long) (d_hits + d_miss));
+        std::printf("DONE %lld %lld %.1f %.1f %s %llu %llu %zu %llu %llu\n", (long long) produced,
+                    (long long) prompt.size(), prompt_ms, decode_ms, finish,
+                    (unsigned long long) (model.spec_hits_ - hits0), (unsigned long long) (model.spec_steps_ - spec0),
+                    reuse, (unsigned long long) d_hits, (unsigned long long) (d_hits + d_miss));
         std::fflush(stdout);
         // this machine's expert usage, for the next start's warm-up (after DONE: the client is not kept waiting)
         if (model.fast()) model.save_usage();
@@ -1295,8 +1329,13 @@ static int glm_pack_generate(const Options& o) {
     // [<key>=<value> ...] <id,id,...> lines - the sampling keys are per request and the ids are the LAST
     // token.  "stop" is NOT advertised: a request runs to its end (no mid-request cancel in M3.1).
     std::printf("READY %lld stop\n", (long long) o.max_context);
-    std::fprintf(stderr, "strata generate: glm5-next serve (M3.1): GEN <max_new> [keys] <ids>; QUIT to end; "
-                         "each GEN starts a fresh sequence\n");
+    std::fprintf(stderr, "strata generate: glm5-next serve (M3.1): GEN <max_new> [keys] <ids>, GENI <max_new> [keys] "
+                         "<embeddings> <ids>; QUIT to end\n");
+    // GENI: the embeddings file is one or more strata-vision records (int32 'SVE1', n, nx, ny, n_embd, then n x n_embd
+    // floats) in prompt order; their rows stand in for the prompt's <|image|> tokens, in order (GLM-5.3's image
+    // tokens take no positions of their own: the rows only replace the embeddings)
+    constexpr int64_t kGlmImageToken = 154854;   // <|image|>
+    std::vector<int32_t> lp_ctx;   // LOGP: the context the saved state belongs to (the state before its last token)
     std::string line;
     while (next_line(line)) {
         std::istringstream ss(line);
@@ -1304,16 +1343,96 @@ static int glm_pack_generate(const Options& o) {
         ss >> cmd;
         if (cmd == "QUIT") break;
         if (cmd == "STOP") continue;   // a stray one between requests: ignore
-        if (cmd == "GEN") {
+        // LOGP <n_ctx> <id,id,...>: the summed log-probability of the tokens from n_ctx on given those before
+        // ("LP <sum> <n> <1 if every one was the most likely>") - the multiple-choice scoring of the zero-shot suite
+        // (tools/maya_quant/zs_tasks.py).  A context identical to the previous request's is restored, not read again
+        // (the choices of one question share it).
+        // VLEND / VRECLAIM (between requests): the on-demand vision encoder is about to start on the first GPU - the
+        // expert pool's tail is emptied and freed for it ("VLENT <bytes>") - and has ended ("VRECLAIMED"; an ERR while
+        // its memory is not free yet: try again)
+        if (cmd == "VLEND") {
+            size_t lent = 0;
+            if (model.vision_lend(lent, err)) std::printf("VLENT %zu\n", lent);
+            else std::printf("ERR %s\n", err.c_str());
+            std::fflush(stdout);
+            continue;
+        }
+        if (cmd == "VRECLAIM") {
+            if (model.vision_reclaim(err)) std::printf("VRECLAIMED\n");
+            else std::printf("ERR %s\n", err.c_str());
+            std::fflush(stdout);
+            continue;
+        }
+        if (cmd == "LOGP") {
+            int64_t n_ctx = 0;
+            std::string ids_s;
+            ss >> n_ctx >> ids_s;
+            std::vector<int64_t> t64;
+            std::string e;
+            if (n_ctx < 2 || ids_s.empty() || !parse_i64_list(ids_s.c_str(), t64, e) || (int64_t) t64.size() <= n_ctx) {
+                std::printf("ERR malformed LOGP line\n");
+                std::fflush(stdout);
+                continue;
+            }
+            std::vector<int32_t> t(t64.begin(), t64.end());
+            snap_tokens.clear();                  // the saved state is LOGP's now, not a conversation's
+            model.set_host_logits(true);
+            const std::vector<int32_t> ctx(t.begin(), t.begin() + n_ctx);
+            bool ok = true;
+            if (!(model.fast() && ctx == lp_ctx && model.snapshot_restore())) {
+                model.reset();
+                std::vector<int32_t> head(t.begin(), t.begin() + n_ctx - 1);
+                ok = model.prefill(head, err, t[(size_t) n_ctx - 1]);
+                if (!ok && err.empty()) {   // no prompt path: the token path, 8 at a time
+                    ok = true;
+                    std::vector<float> lg0;
+                    for (size_t i = 0; ok && i < head.size(); i += 8) {
+                        const std::vector<int32_t> part(head.begin() + (long) i,
+                                                        head.begin() + (long) std::min(head.size(), i + 8));
+                        ok = model.forward(part, lg0, err);
+                    }
+                }
+                lp_ctx.clear();
+                if (ok && model.fast() && model.snapshot_save()) lp_ctx = ctx;
+            }
+            std::vector<float> lgv;
+            double lp = 0.0;
+            bool greedy = true;
+            for (int64_t j = n_ctx; ok && j < (int64_t) t.size(); ++j) {
+                ok = model.forward({t[(size_t) j - 1]}, lgv, err);
+                if (!ok) break;
+                float mx = lgv[0];
+                size_t am = 0;
+                for (size_t v = 1; v < lgv.size(); ++v)
+                    if (lgv[v] > mx) { mx = lgv[v]; am = v; }
+                double se = 0.0;
+                for (const float x : lgv) se += std::exp((double) x - mx);
+                lp += (double) lgv[(size_t) t[(size_t) j]] - mx - std::log(se);
+                greedy = greedy && am == (size_t) t[(size_t) j];
+            }
+            model.set_host_logits(false);
+            if (!ok) {
+                lp_ctx.clear();
+                std::printf("ERR %s\n", err.c_str());
+            } else {
+                std::printf("LP %.6f %lld %d\n", lp, (long long) (t.size() - (size_t) n_ctx), greedy ? 1 : 0);
+            }
+            std::fflush(stdout);
+            continue;
+        }
+        if (cmd == "GEN" || cmd == "GENI") {
             int64_t max_new = 0;
             ss >> max_new;
             strata::kernels::SamplerParams rq = sp;
             bool any_key = false;
-            std::string tok2, ids;
+            req_think_budget = 0;
+            req_think_end = -1;
+            std::string tok2, ids, emb_path;
             while (ss >> tok2) {
                 const size_t eq = tok2.find('=');
                 if (eq == std::string::npos) {
-                    ids = tok2;   // the ids list is the last token on the line
+                    if (cmd == "GENI" && emb_path.empty()) emb_path = tok2;   // GENI: the file, then the ids
+                    else ids = tok2;   // the ids list is the last token on the line
                     continue;
                 }
                 const std::string k = tok2.substr(0, eq), v = tok2.substr(eq + 1);
@@ -1322,6 +1441,8 @@ static int glm_pack_generate(const Options& o) {
                 else if (k == "top_k") { rq.top_k = std::atoi(v.c_str()); any_key = true; }
                 else if (k == "min_p") { rq.min_p = (float) std::atof(v.c_str()); any_key = true; }
                 else if (k == "seed") { rq.seed = (uint64_t) std::atoll(v.c_str()); }
+                else if (k == "think_budget") { req_think_budget = std::atoll(v.c_str()); }
+                else if (k == "think_end") { req_think_end = std::atoi(v.c_str()); }
                 // penalty_* and the calibration keys need machinery this mode does not have (history rows,
                 // request-scoped engine settings): ignored rather than approximated
             }
@@ -1332,7 +1453,43 @@ static int glm_pack_generate(const Options& o) {
                 std::printf("ERR malformed GEN line\n");
                 continue;
             }
+            lp_ctx.clear();   // a generation saves its own state over LOGP's
+            cur_img_pos.clear();
+            cur_img_rows.clear();
+            if (cmd == "GENI") {
+                const int64_t E = model.geometry().n_embd;
+                std::FILE* f = std::fopen(emb_path.c_str(), "rb");
+                std::string ge = f ? "" : "cannot open " + emb_path;
+                while (f && ge.empty()) {
+                    int32_t hdr[5];
+                    if (std::fread(hdr, sizeof hdr, 1, f) != 1) break;   // the end of the records
+                    if (hdr[0] != 0x31455653 || hdr[1] <= 0 || hdr[4] != E) {
+                        ge = "not a strata-vision record for this model";
+                        break;
+                    }
+                    const size_t at = cur_img_rows.size();
+                    cur_img_rows.resize(at + (size_t) hdr[1] * (size_t) E);
+                    if (std::fread(cur_img_rows.data() + at, sizeof(float) * (size_t) E, (size_t) hdr[1], f) !=
+                        (size_t) hdr[1])
+                        ge = "short embeddings file";
+                }
+                if (f) std::fclose(f);
+                for (size_t i = 0; ge.empty() && i < toks.size(); ++i)
+                    if (toks[i] == kGlmImageToken) cur_img_pos.push_back((int64_t) i);
+                if (ge.empty() && (int64_t) cur_img_pos.size() * E != (int64_t) cur_img_rows.size())
+                    ge = std::to_string(cur_img_pos.size()) + " image tokens, " +
+                         std::to_string(cur_img_rows.size() / (size_t) E) + " image rows";
+                if (!ge.empty()) {
+                    cur_img_pos.clear();
+                    cur_img_rows.clear();
+                    std::printf("ERR %s\n", ge.c_str());
+                    std::fflush(stdout);
+                    continue;
+                }
+            }
+            model.set_image_rows(cur_img_pos, cur_img_rows);
             run_request(toks, max_new, rq);
+            model.set_image_rows({}, {});
             continue;
         }
         if (cmd.empty()) continue;

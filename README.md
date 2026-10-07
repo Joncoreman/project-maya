@@ -1,10 +1,7 @@
 <h1 align="center">Project Maya</h1>
 
 <p align="center"><b>Run GLM-5.3-Flash - a 321-billion-parameter AI model - on your own NVIDIA GPU(s)</b><br>
-One or two NVIDIA GPUs · Linux · chat in the browser, OpenAI- and Anthropic-compatible API</p>
-
-> "Project Maya" is a working name. This file becomes the repository's `README.md` when the release is made
-> (RELEASE-CHECKLIST.md).
+One or two NVIDIA GPUs · Linux · chat in the browser, pictures, OpenAI- and Anthropic-compatible API</p>
 
 Maya runs **[GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash)** (zai-org, MIT license): a mixture-of-
 experts model with 321 B parameters, of which about 18 B work on each token, and a context of up to 1 M tokens.
@@ -15,20 +12,32 @@ Nothing leaves your machine.
 It is built on [Strata](https://github.com/Niko1221/Strata) (MIT): Maya's engine is Strata's engine rewritten for
 GLM-5.3-Flash, and the server and dashboard are Strata's.
 
+## The model: Maya-S
+
+Maya installs **Maya-S**, Project Maya's own 2-bit quant of GLM-5.3-Flash (90 GB,
+[on Hugging Face](https://huggingface.co/peasantsmith/GLM-5.3-Flash-Maya-GGUF)). It is made from Z.ai's FP8 release -
+the precision the model is served at - with statistics from the FP8 model itself and error-feedback rounding of the
+experts, and it keeps the model's MTP block, which drafts tokens ahead (speculative decoding on two GPUs).
+
+Against the FP8 model on held-out text it picks the same next token 82% of the time (84% leaving out text the FP8
+model has memorized), at a perplexity of 4.31 against FP8's 3.51, and it ran 14 long answers (6,000-14,000 tokens)
+without a loop. Task accuracy against FP8 (ARC, HellaSwag, WinoGrande, PIQA) is being measured.
+Details: [bench/results/MAYA-S-V1.md](bench/results/MAYA-S-V1.md).
+
 ## How fast is it?
 
-Measured with Unsloth's **UD-IQ1_S** quant of the model (93 GB). A token is about ¾ of a word.
+Measured with Maya-S. A token is about ¾ of a word.
 
-| Machine | Benchmark (greedy, fixed prompt) | Real chat | Reads your prompt |
-| --- | ---: | ---: | ---: |
-| **2x Tesla V100 32 GB** (PCIe 3), Xeon E5-2690 v4, 30 GB RAM, one NVMe | **45-50 tokens/s** (200-1,000-token answers) | **~30 tokens/s**, ~40 once warm (60-150-token answers) | 3.5 ms/token (2.6K-token prompt) |
-| **1x Tesla V100 32 GB** (PCIe 3), Core i5-12600T, 64 GB RAM, PCIe 4.0 NVMe | **22-24 tokens/s** (200-token answers) | **~17 tokens/s** (five different topics in a row, 400-token answers) | 5.0 ms/token (2.6K-token prompt) |
+| Machine | Answers (through the dashboard) | Reads your prompt |
+| --- | ---: | ---: |
+| **2x Tesla V100 32 GB** (PCIe 3), Xeon E5-2690 v4, 30 GB RAM, one NVMe | **30-33 tokens/s** with 1K-32K tokens of context, **~29** at 60K | 380-440 tokens/s |
+| **1x Tesla V100 32 GB** (PCIe 3), Core i5-12600T, 64 GB RAM, PCIe 4.0 NVMe | **~16 tokens/s** (8K-token prompt) | 250 tokens/s |
 
-Project Maya's own quant of GLM-5.3-Flash, made from the official FP8 weights, is in progress.
-
-- *Benchmark*: the engine alone, greedy decoding, the same prompt file every run, warm caches.
-- *Real chat*: answers through the dashboard, from a fresh start until the caches are warm. The first answers after
-  a start are the slowest: the expert caches fill with the experts your conversations use.
+- 300-token answers at temperature 1.0 with thinking off, through the dashboard; the 1x V100 row through the engine
+  directly, greedy, measured before the long-context fix below (it will be measured again).
+- The speed holds with context: the attention's selection step is linear in the context length, so a 60K-token
+  conversation answers about as fast as a short one.
+- The first answers after a start are the slowest: the expert caches fill with the experts your conversations use.
 - Only these two machines have been measured. Other GPUs should work (see below) but have no numbers yet.
 
 ## What you need
@@ -37,7 +46,7 @@ Project Maya's own quant of GLM-5.3-Flash, made from the official FP8 weights, i
 | --- | --- |
 | **GPU** | NVIDIA, compute capability 7.0 or newer (V100 and newer). **24-32 GB of VRAM, or two GPUs** that share the model (each holds half of the layers). Measured: 1 and 2x V100 32 GB. |
 | **RAM** | **64 GB recommended.** It runs with less, but every expert that does not fit in RAM is read from the SSD while it answers, which is slower. |
-| **Disk** | **~100 GB free on a fast NVMe SSD** (the model is 93 GB, and the engine reads from it while it answers). Not a hard disk. |
+| **Disk** | **~100 GB free on a fast NVMe SSD** (the model is 90 GB, its pictures encoder 1.1 GB, and the engine reads from the model while it answers). Not a hard disk. |
 | **System** | Linux (x86-64, CPU with AVX2), NVIDIA driver, CUDA toolkit 12.x (CUDA 13 can be used for Turing and newer, but it no longer compiles for Volta/V100), g++, Python 3.10+. Windows and WSL2 are not supported yet ([why](#windows)). |
 
 The installer checks all of this and prints the exact command for anything missing. It installs nothing
@@ -62,10 +71,13 @@ The first run takes 20-40 minutes plus the download:
 2. asks which GPUs to use (both, when there are two) and how much context (32K recommended);
 3. installs its Python packages into `.venv` and gets llama.cpp's source at a pinned commit (it lists both and asks);
 4. compiles the engine for your GPU(s) (10-30 minutes, once);
-5. **the model**: it shows the source, the size (93 GB) and the exact `curl` commands, and downloads only when you
-   answer `y`. You can run the commands yourself instead, or use files you already have: `./maya.sh --gguf-dir DIR`;
+5. **the model**: it shows the source, the size (90 GB) and the exact `curl` commands, and downloads only when you
+   answer `y`; every file is checked against its published sha256. You can run the commands yourself instead, or use
+   files you already have: `./maya.sh --gguf-dir DIR`;
 6. builds the *pack* - the engine's index of the model files, about 1 GB, written into the model folder;
-7. writes `maya-<model>.json` and `run-maya-<model>.sh`, and starts the dashboard.
+7. **pictures**: compiles the image encoder (10-20 minutes, once) and fetches its files (1.1 GB, shown and asked
+   first); `--no-vision` skips it;
+8. writes `maya-<model>.json` and `run-maya-<model>.sh`, and starts the dashboard.
 
 **Next time**, `./maya.sh` starts it right away. Ctrl+C stops it. After a `git pull`, `./maya.sh` recompiles only
 what changed before it starts.
@@ -82,6 +94,7 @@ what changed before it starts.
 | `--gguf-dir DIR` | use GLM-5.3-Flash GGUF files you already have (the folder must be writable: the pack goes inside it) |
 | `--data-dir DIR` | where a downloaded model goes (default `../Maya-data`); put it on the NVMe |
 | `--download-model` | download the model without asking (the commands and size are still printed) |
+| `--no-vision` | text only: no image encoder |
 | `--gpu N` / `--gpus 0,1` | one GPU, or two that split the model |
 | `--context N` | context length in tokens: 8192, 32768 (default), 65536, 131072 |
 | `--port N`, `--host 0.0.0.0 --api-key KEY` | another port; reachable from your network (always set a key) |
@@ -97,7 +110,12 @@ what changed before it starts.
 - **Your apps and coding agents:** an "OpenAI-compatible" provider with the base URL `http://127.0.0.1:8080/v1`
   (any model name; any API key unless you set one). Anthropic's API: `http://127.0.0.1:8080/v1/messages`
   (Claude Code: `ANTHROPIC_BASE_URL=http://127.0.0.1:8080`).
-- **Thinking:** off, low, medium (the default) or high, in the chat menu or the request's "reasoning effort".
+- **Thinking:** off, low, medium (the default) or high, in the chat menu or the request's "reasoning effort". A
+  reasoning block is capped at 32K tokens, then the answer follows (`"thinking_budget"` in the config; 0 = no cap).
+- **Pictures:** attach one in the chat, or send `image_url` parts (OpenAI) / `image` blocks (Anthropic). The image
+  encoder runs only while a new picture is read - a second or two to start, in GPU memory the model lends it - so
+  the model keeps its whole GPU cache the rest of the time. On the first start Maya measures how much memory the
+  encoder needs on your GPU and picks the largest picture size that fits it well (`vision-memory.json`).
 - **From another device:** `./maya.sh --setup --host 0.0.0.0 --api-key <secret>`. Always set a key.
 - **One request at a time:** others wait their turn.
 
@@ -142,7 +160,7 @@ pins tens of GB. `START-MAYA.bat` says the same.
   [ggml / llama.cpp](https://github.com/ggml-org/llama.cpp)** (MIT License, Copyright (c) 2023-2026 The ggml
   authors) - the quantization formats, the CPU dot products and the prompt path's MMQ kernels, built from a pinned
   commit (`third_party/ggml/LICENSE`).
-- The model: [GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash) by zai-org (MIT); the UD-IQ1_S GGUF by
-  [Unsloth](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF). Model files keep their own licenses.
+- The model: [GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash) by zai-org (MIT); Maya-S and the image
+  encoder file are made from zai-org's released weights and keep its license.
 - The dashboard's font: Outfit (SIL Open Font License 1.1, `serve/web/fonts/OFL.txt`).
 - Maya is open source under the [MIT License](LICENSE); the notices of Strata and ggml stay with every copy.

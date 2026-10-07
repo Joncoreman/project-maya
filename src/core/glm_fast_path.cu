@@ -452,13 +452,29 @@ bool Glm5Model::fast_setup(std::string& err) {
         // the prompt path borrows the pool's TAIL: the last k slots of every layer, laid out as one region after all
         // the main segments - the prompt path's buffers while a prompt runs, expert slots the rest of the time
         int k_extra = 0;
+        const auto tail_slots = [&](size_t bytes) {
+            return (int) ((bytes + stride_sum - 1) / std::max<size_t>(1, stride_sum));
+        };
         if (pf_ != nullptr) {
-            k_extra = (int) ((prefill_borrow_bytes() + stride_sum - 1) / std::max<size_t>(1, stride_sum));
+            k_extra = tail_slots(prefill_borrow_bytes());
             if (per - k_extra < g.n_exp_used + gf::kSpares + 8) {
                 std::fprintf(stderr, "glm prefill: CUDA%d the pool (%d slots/layer) cannot lend %zu MB - token by token\n",
                              dev_, per, prefill_borrow_bytes() >> 20);
                 prefill_destroy();
                 k_extra = 0;
+            }
+        }
+        // an on-demand vision encoder on the first GPU (the server sets STRATA_GLM_VISION_LEND_MB) borrows the same
+        // tail while it encodes, so the tail there is the larger of the two needs
+        vis_lend_ok_ = false;
+        if (const char* v = getenv("STRATA_GLM_VISION_LEND_MB"); v != nullptr && dev_ == 0) {
+            const size_t vb = (size_t) std::max(0LL, std::atoll(v)) << 20;
+            if (vb > 0 && per - tail_slots(vb) >= g.n_exp_used + gf::kSpares + 8) {
+                k_extra = std::max(k_extra, tail_slots(vb));
+                vis_lend_ok_ = true;
+            } else if (vb > 0) {
+                std::fprintf(stderr, "glm fast: CUDA%d the pool (%d slots/layer) cannot lend %zu MB to the vision "
+                                     "encoder\n", dev_, per, vb >> 20);
             }
         }
         // the slots PER LAYER: uniform, or - with the pack's expert_counts.txt (tools/glm_expert_prior.py) - by routing
@@ -541,19 +557,22 @@ bool Glm5Model::fast_setup(std::string& err) {
                 }
             }
         }
-        size_t tot = 0;
+        size_t tot = 0, xtot = 0;
         int nmin = INT32_MAX, nmax = 0;
         for (int il = l0_; il < lt_; ++il)
             if (F->L[(size_t) il].moe) {
                 tot += (size_t) nsl[(size_t) il] * slot_stride(il);
+                xtot += (size_t) k_extra * slot_stride(il);
                 nmin = std::min(nmin, nsl[(size_t) il]);
                 nmax = std::max(nmax, nsl[(size_t) il]);
             }
-        if (cudaMalloc(&F->pool, tot) != cudaSuccess) {
+        if (cudaMalloc(&F->pool, tot - xtot) != cudaSuccess ||
+            (xtot > 0 && cudaMalloc(&F->xpool, xtot) != cudaSuccess)) {
             err = "glm fast: the expert pool (" + std::to_string(tot >> 20) + " MB) did not allocate";
             return false;
         }
         F->pool_bytes = tot;
+        F->xpool_bytes = xtot;
         uint8_t* b = F->pool;
         for (int il = l0_; il < lt_; ++il) {
             if (!F->L[(size_t) il].moe) continue;
@@ -569,14 +588,18 @@ bool Glm5Model::fast_setup(std::string& err) {
             b += (size_t) P.n_main * P.stride;
             F->pool_slots += nl;
         }
-        uint8_t* xregion = b;
+        uint8_t* xregion = F->xpool;
+        b = xregion;
         for (int il = l0_; il < lt_; ++il) {
             if (!F->L[(size_t) il].moe) continue;
             auto& P = F->lp[(size_t) il];
             P.xbase = b;
             b += (size_t) k_extra * P.stride;
         }
-        if (pf_ != nullptr && !prefill_bind(xregion, (size_t) (b - xregion), err)) return false;
+        if (pf_ != nullptr && !prefill_bind(xregion, xtot, err)) return false;
+        if (vis_lend_ok_)
+            std::fprintf(stderr, "glm fast: CUDA%d the vision encoder borrows the pool's tail (%.2f GB) while it "
+                                 "encodes\n", dev_, (double) xtot / 1073741824.0);
         F->cnt.assign((size_t) NL * g.n_expert, 0);
         F->usage.assign((size_t) NL * g.n_expert, 0);
         F->pred_of.assign((size_t) NL, std::array<int, 8>{-1, -1, -1, -1, -1, -1, -1, -1});
@@ -1359,6 +1382,7 @@ void Glm5Model::fast_destroy() {
     if (F->mtp_tok_h) cudaFreeHost(F->mtp_tok_h);
     if (F->ev_mtp) cudaEventDestroy(F->ev_mtp);
     if (F->pool) cudaFree(F->pool);
+    if (F->xpool) cudaFree(F->xpool);
     if (F->arena) cudaFree(F->arena);
     if (F->ps) cudaStreamSynchronize(F->ps);
     if (F->ev_hop) cudaEventDestroy(F->ev_hop);
@@ -2374,6 +2398,7 @@ bool Glm5Model::fast_token(int32_t token, std::string& err) {
     }
     tt->to_float(pack_emb_src_ + (size_t) token * strata::kernels::iq_row_bytes(pack_emb_type_, g.n_embd), F->emb_h,
                  g.n_embd);
+    if (const float* img = image_row(p)) std::memcpy(F->emb_h, img, (size_t) g.n_embd * sizeof(float));   // an image
     cudaMemcpyAsync(F->emb, F->emb_h, (size_t) g.n_embd * sizeof(float), cudaMemcpyHostToDevice, F->cs);
     gf::embed_streams(F->emb, state_, g.n_embd, F->cs);
     if (!fast_layers(p, false, err)) return false;
@@ -2605,6 +2630,7 @@ bool Glm5Model::spec_head(int64_t p, int32_t token, std::string& err) {
     const ggml_type_traits* tt = ggml_get_type_traits((ggml_type) pack_emb_type_);
     tt->to_float(pack_emb_src_ + (size_t) token * strata::kernels::iq_row_bytes(pack_emb_type_, g.n_embd), F->emb_h,
                  g.n_embd);
+    if (const float* img = image_row(p)) std::memcpy(F->emb_h, img, (size_t) g.n_embd * sizeof(float));   // an image
     cudaMemcpyAsync(F->emb, F->emb_h, (size_t) g.n_embd * sizeof(float), cudaMemcpyHostToDevice, F->cs);
     gf::embed_streams(F->emb, state_, g.n_embd, F->cs);
     lap(2);
@@ -2710,6 +2736,7 @@ bool Glm5Model::decode_spec(strata::kernels::SamplerParams& sp, int64_t max_new,
                 return false;
             }
         }
+        y = forced(y);
         sp.counter += 1;
         last_tok_ = y;
         return true;
@@ -2732,7 +2759,7 @@ bool Glm5Model::decode_spec(strata::kernels::SamplerParams& sp, int64_t max_new,
     int64_t q = pos_ - 1;
     int y = -1;
     if (sp.greedy && last_tok_ >= 0) {
-        y = last_tok_;
+        y = forced(last_tok_);
         sp.counter += 1;
     } else {
         cudaSetDevice(B->dev_);

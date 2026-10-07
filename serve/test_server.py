@@ -176,8 +176,14 @@ class ImageMarkers(unittest.TestCase):
             self.rows = self.dir / "img.sve"
             self.rows.write_bytes(b"rows")
 
+        owed = False   # (server.Vision: GPU memory an on-demand encode borrowed and has not given back)
+
         def encode(self, source):
             return self.rows, 3
+
+        def active(self):
+            import contextlib
+            return contextlib.nullcontext(self)
 
     def test_literal_marker_with_an_image(self):
         import tempfile

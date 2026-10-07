@@ -58,6 +58,29 @@ fact planted at its very start, the question at its end (thinking Low, greedy).
 
 Each answer: the exact code and the one sentence about where it was, then the end-of-turn token.
 
+## Speed at context depth (2026-10-07, Mercury)
+
+Mercury (2x V100 32 GB, 30 GB RAM), through the dashboard: the repository's documents and kernels as the prompt, then
+300 new tokens at temperature 1.0, thinking off, the MTP block drafting.  The DSA attention's pool selection used to
+rank every pool against every other on each token (quadratic in the context: 21 ms per DSA layer at 64K); it is now
+a radix select (0.07 ms at 64K, the same pools in the same order - tests/dsa_topk_parity.cu), and the decode no
+longer slows down with the context:
+
+| Prompt | 0.9K | 15-18K | 32K | 48K | 60K |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Decode, tok/s | 32.8 | 31.7 | 30.5 | 29.5\* | 28.9\* |
+| Prompt, tok/s | 165 | 384 | 385 | 357\* | 353\* |
+
+\* with the image encoder resident beside the model (2.5 GB less expert cache on the first GPU); the other columns
+with it on demand, as shipped.  The context-fill numbers above (Uranus) predate the fix: there the decode fell from
+15.9 tok/s at 8K to 9.6 at 30K.
+
+## Thinking budget
+
+Long creative prompts at High effort planned past 14,000 tokens (above).  The server now caps a reasoning block at
+32,768 tokens by default (`thinking_budget` in the config; 0 = none): the engine emits `</think>` in place of the next
+sampled token and the answer follows in the same decode, nothing read again.
+
 ## What v2 targets
 
 - Tool-call formats and memorized knowledge: more tool-call calibration, Q8_0 attention and shared experts.

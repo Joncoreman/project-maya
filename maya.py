@@ -18,7 +18,9 @@ What the first run does (each step is skipped when it is already done):
   5. the model: GGUF files you already have (--gguf-dir), or a download it shows you first - the exact commands
      and the size - and starts only after you answer y (or pass --download-model)
   6. builds the pack (the engine's index of the GGUF files) inside the model folder
-  7. writes maya-<model>.json and run-maya-<model>.sh, and starts the dashboard on http://127.0.0.1:8080
+  7. images: compiles the vision encoder (`build-vision/bin/strata-vision`) and fetches the model's vision files
+     (1.1 GB, shown and asked first like the model; --no-vision skips it)
+  8. writes maya-<model>.json and run-maya-<model>.sh, and starts the dashboard on http://127.0.0.1:8080
 
 Nothing is installed system-wide: a missing tool is reported with the command that installs it.
 """
@@ -45,23 +47,39 @@ ROOT = S.ROOT
 BUILD = ROOT / "build"
 EXE = BUILD / "strata"
 STAMP = BUILD / "MAYA-BUILD.json"                  # what the engine in build/ was compiled from and for
+VBUILD = ROOT / "build-vision"
+VEXE = VBUILD / "bin" / "strata-vision"            # the image encoder (tools/vision, llama.cpp's mtmd)
+VSTAMP = VBUILD / "MAYA-BUILD.json"
 MIN_CC = 70                                        # Volta (V100) and newer (the GLM path; see arch_setting)
-PY_PACKAGES = [p for p in S.PY_PACKAGES if p != "pillow"]   # pillow is for Strata's image encoder only
+PY_PACKAGES = list(S.PY_PACKAGES)                  # (pillow: pictures in formats other than JPEG/PNG/BMP/GIF)
 CONTEXTS = [8192, 32768, 65536, 131072]
 DEFAULT_CONTEXT = 32768
 MODEL_NAME = "glm-5.3-flash"
 SAMPLING = {"temperature": 1.0, "top_p": 0.95}     # the dashboard's and the API's defaults for requests that set none
 EFFORT = "medium"                                  # thinking level for requests that name none
 HF = "https://huggingface.co/{repo}/resolve/{revision}/{folder}/{file}"
-# The models the installer can download.  Only UD-IQ1_S has been measured end to end (README-MAYA.md); another glm5-next
-# GGUF can be used with --gguf-dir (experimental).  Before a release (RELEASE-CHECKLIST.md): "revision" = the
-# repository commit the files were checked at (instead of main, which can change), "sha256" = per file name (the
-# download is then verified).
+# The models the installer can download: Project Maya's own quants, made from Z.ai's FP8 release (their model card
+# has the measurements against it).  Another glm5-next GGUF can be used with --gguf-dir (experimental).  "sha256" per
+# file name: every download is verified.  "vision": the image encoder's files (the mmproj, made from the official
+# vision tower, and the tokenizer it reads its markers with).
 MODELS = {
-    "UD-IQ1_S": {"about": "Unsloth's 1.6-bit dynamic quant - every published Maya number was measured with it",
-                 "repo": "unsloth/GLM-5.3-Flash-GGUF", "revision": "main", "folder": "UD-IQ1_S",
-                 "file": "GLM-5.3-Flash-UD-IQ1_S-{i:05d}-of-{n:05d}.gguf", "shards": 3, "download_gb": 93.0,
-                 "sha256": {}},
+    "Maya-S-IQ2_XXS": {
+        "about": "Project Maya's 2-bit quant: error-feedback-rounded IQ2_XXS experts, Q6_K attention, the MTP draft "
+                 "block, made from Z.ai's FP8 release",
+        "repo": "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "revision": "main", "folder": "Maya-S-IQ2_XXS",
+        "file": "GLM-5.3-Flash-Maya-S-IQ2_XXS-{i:05d}-of-{n:05d}.gguf", "shards": 2, "download_gb": 90.1,
+        "sha256": {
+            "GLM-5.3-Flash-Maya-S-IQ2_XXS-00001-of-00002.gguf":
+                "d657bb8acf3a6ab18c02956002945271918f2385be6a5eb63ada3af2b833f197",
+            "GLM-5.3-Flash-Maya-S-IQ2_XXS-00002-of-00002.gguf":
+                "bc57ef45d57b7eccde27a78ace9ff74535aac733d816bbc55704c21bb7b63665"},
+        "vision": {
+            "folder": "vision", "mmproj": "mmproj-GLM-5.3-Flash-F16.gguf", "vocab": "GLM-5.3-Flash-vocab.gguf",
+            "download_gb": 1.14,
+            "sha256": {"mmproj-GLM-5.3-Flash-F16.gguf":
+                           "3627575df16bd152db0f3fd7e488d270b33f3a9e6c7fa3b1b8ac381faafde882",
+                       "GLM-5.3-Flash-vocab.gguf":
+                           "8f53cb1bd2e631c14ef413e3284735d9e53f3c508d07a6f609e705b487105912"}}},
 }
 SHARD_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 PACK_FILES = ("index.txt", "native_experts.txt", "dense.bin", "tokenizer/vocab.json", "tokenizer/merges.txt",
@@ -560,7 +578,7 @@ def model_step(a, data: Path):
             if why:
                 fail(f"{s.name}: {why}", "finish copying or downloading it, then run ./maya.sh again")
         if quant not in MODELS:
-            warn(f"{quant}: experimental - only {', '.join(MODELS)} has been measured with Maya (README-MAYA.md)")
+            warn(f"{quant}: experimental - only {', '.join(MODELS)} has been measured with Maya (README.md)")
     else:
         quant = a.model or next(iter(MODELS))
         m = MODELS[quant]
@@ -606,7 +624,93 @@ def pack_step(a, d: Path, shards: list, llama: Path) -> Path:
     return pack
 
 
-# ------------------------------------------------------------------------------------------------ 7. config + start
+# ------------------------------------------------------------------------------------------------ 7. images
+def fetch(url: str, dst: Path, want: str | None) -> None:
+    """One file, resumable (curl -C -, else Python), then its sha256 when one is published."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which("curl"):
+        if run(["curl", "-L", "--fail", "--retry", "5", "-C", "-", "-o", str(dst), url], check=False).returncode != 0:
+            fail(f"the download of {dst.name} stopped (the reason is above)", "run ./maya.sh --setup again: it "
+                                                                              "continues where it stopped")
+    else:
+        S.download(url, dst)
+    if want and not sha256_ok(dst, want):
+        dst.unlink(missing_ok=True)
+        fail(f"{dst.name}: the sha256 does not match the published one (the file was removed)",
+             "run ./maya.sh --setup again to download it again")
+
+
+def compile_vision(pc, meta, llama: Path, src: str) -> bool:
+    """strata-vision: llama.cpp's mtmd at the pinned commit with GLM-5.3-Flash's vision tower added
+    (tools/vision/glm5next_patch.py, idempotent), for the same GPUs and toolkit as the engine."""
+    cmake = pick_cmake()
+    if cmake is None:
+        return False
+    run([sys.executable, str(ROOT / "tools" / "vision" / "glm5next_patch.py"), str(llama)])
+    gen = re.search(r"^CMAKE_GENERATOR:INTERNAL=(.*)$", (VBUILD / "CMakeCache.txt").read_text(errors="replace"), re.M) \
+        if (VBUILD / "CMakeCache.txt").exists() else None
+    ninja = venv_tool("ninja") or shutil.which("ninja")
+    conf = [cmake]
+    if ninja and (gen is None or gen.group(1).strip() == "Ninja"):
+        conf += ["-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}"]
+    archs = meta.get("archs") or pc["archs"]
+    conf += ["-S", str(ROOT / "tools" / "vision"), "-B", str(VBUILD), "-DCMAKE_BUILD_TYPE=Release",
+             f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON",
+             "-DCMAKE_CUDA_ARCHITECTURES=" + ";".join(str(x) for x in archs),
+             f"-DCMAKE_CUDA_COMPILER={meta.get('nvcc') or pc['nvcc']}"]
+    if meta.get("host_compiler"):
+        conf.append(f"-DCMAKE_CUDA_HOST_COMPILER={shutil.which(meta['host_compiler']) or meta['host_compiler']}")
+    jobs = max(2, min((os.cpu_count() or 4) // 2, int(mem_gb()[0] // 4) or 2))
+    say("  Compiling the vision encoder (llama.cpp's image library with ggml's CUDA kernels: 10-20 minutes, once) ...")
+    if run(conf, check=False).returncode != 0 or \
+            run([cmake, "--build", str(VBUILD), "--target", "strata-vision", "-j", str(jobs)], check=False).returncode != 0:
+        return False
+    VSTAMP.write_text(json.dumps({"src": src, "archs": archs, "llama": str(llama),
+                                  "date": time.strftime("%Y-%m-%d %H:%M")}, indent=1), encoding="utf-8")
+    return VEXE.exists()
+
+
+def vision_step(a, pc, meta, llama: Path, d: Path, quant: str) -> dict | None:
+    """The config's "vision" entry - the image encoder and its files - or None (images off).  The server starts the
+    encoder only while a request's new pictures are encoded, in GPU memory the model lends it, and measures on the
+    first start how much that is on this GPU (serve/server.py, vision_footprint)."""
+    step(7, "images (the vision encoder)")
+    m = (MODELS.get(quant) or {}).get("vision")
+    if a.no_vision:
+        ok("skipped (--no-vision): the model reads text only")
+        return None
+    if m is None:
+        warn(f"no vision files are published for {quant}: the model reads text only")
+        return None
+    vd = d / m["folder"]
+    files = {k: vd / m[k] for k in ("mmproj", "vocab")}
+    missing = [p for p in files.values() if not p.exists() or (m["sha256"].get(p.name) and p.stat().st_size == 0)]
+    if missing:
+        src_url = {p: HF.format(repo=MODELS[quant]["repo"], revision=MODELS[quant]["revision"], folder=m["folder"],
+                                file=p.name) for p in missing}
+        say(f"  The vision encoder's files ({m['download_gb']:.2f} GB) from https://huggingface.co/"
+            f"{MODELS[quant]['repo']} (folder {m['folder']}/), into {vd}:")
+        for p in missing:
+            say("    curl -L --fail -C - -o " + shlex.quote(str(p)) + " " + src_url[p])
+        if not (a.download_model or a.yes) and ask("  Download them now? (y/n)", ["y", "n"], "y", False) != "y":
+            warn("not downloaded: the model reads text only (./maya.sh --setup asks again)")
+            return None
+        for p in missing:
+            fetch(src_url[p], p, m["sha256"].get(p.name))
+            ok(f"{p.name} downloaded")
+    src = S.source_hash(("tools/vision",))
+    vmeta = read_json(VSTAMP)
+    if not (VEXE.exists() and not a.rebuild and vmeta.get("src") == src
+            and set(meta.get("archs") or pc["archs"]) <= set(vmeta.get("archs", []))):
+        if not compile_vision(pc, meta, llama, src):
+            warn("the vision encoder did not compile (the reason is above): the model reads text only - "
+                 "./maya.sh --setup --rebuild tries again")
+            return None
+    ok(f"vision encoder: {VEXE}")
+    return {"exe": str(VEXE), "mmproj": str(files["mmproj"]), "model": str(files["vocab"]), "gpu": True}
+
+
+# ------------------------------------------------------------------------------------------------ 8. config + start
 def parse_env(items) -> dict:
     env = {}
     for it in items:
@@ -628,8 +732,8 @@ def write_run_script(cfg_path: Path, port: int) -> Path:
     return script
 
 
-def write_config(a, pc, meta, pack: Path, quant: str, ctx: int, data: Path) -> Path:
-    step(7, "the configuration and the start script")
+def write_config(a, pc, meta, pack: Path, quant: str, ctx: int, data: Path, vision: dict | None) -> Path:
+    step(8, "the configuration and the start script")
     port = a.port or 8080
     cfg = {"exe": str(EXE), "args": ["--glm-pack", str(pack), "--max-context", str(ctx)], "cwd": str(ROOT),
            "tokenizer": str(pack / "tokenizer"), "model_name": MODEL_NAME, "gpu": [g["index"] for g in pc["gpus"]],
@@ -642,6 +746,8 @@ def write_config(a, pc, meta, pack: Path, quant: str, ctx: int, data: Path) -> P
         cfg["host"] = a.host
     if a.api_key:
         cfg["api_key"] = a.api_key
+    if vision:
+        cfg["vision"] = vision
     cfg_path = ROOT / f"maya-{quant.lower()}.json"
     cfg["log"] = str(cfg_path.with_suffix(".log"))
     cfg["installer"] = {"data_dir": str(data), "quant": quant,
@@ -704,7 +810,9 @@ def main() -> int:
                     help="take the recommended answers (the model download still needs --download-model)")
     ap.add_argument("--download-model", action="store_true",
                     help="download the model without asking (the commands and the size are still printed)")
-    ap.add_argument("--model", choices=list(MODELS), help="which download (default: the first, UD-IQ1_S)")
+    ap.add_argument("--model", choices=list(MODELS), help=f"which download (default: {next(iter(MODELS))})")
+    ap.add_argument("--no-vision", action="store_true", help="text only: no image encoder (saves its build and "
+                                                             "its 1.1 GB of files)")
     ap.add_argument("--gguf-dir", help="use GLM-5.3-Flash GGUF files you already have: the folder with all of them "
                                        "(it must be writable - the pack is written inside it)")
     ap.add_argument("--data-dir", help="where a downloaded model goes (default: Maya-data next to this folder); use a "
@@ -762,7 +870,8 @@ def main() -> int:
         return 0
     d, shards, quant = got
     pack = pack_step(a, d, shards, llama)              # 6
-    cfg_path = write_config(a, pc, meta, pack, quant, ctx, data)   # 7
+    vision = vision_step(a, pc, meta, llama, d, quant)  # 7
+    cfg_path = write_config(a, pc, meta, pack, quant, ctx, data, vision)   # 8
     if a.no_start:
         say()
         say(f"All set. Start it with ./maya.sh (or ./run-{cfg_path.stem}.sh).")
