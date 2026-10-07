@@ -1,0 +1,148 @@
+<h1 align="center">Project Maya</h1>
+
+<p align="center"><b>Run GLM-5.3-Flash - a 321-billion-parameter AI model - on your own NVIDIA GPU(s)</b><br>
+One or two NVIDIA GPUs · Linux · chat in the browser, OpenAI- and Anthropic-compatible API</p>
+
+> "Project Maya" is a working name. This file becomes the repository's `README.md` when the release is made
+> (RELEASE-CHECKLIST.md).
+
+Maya runs **[GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash)** (zai-org, MIT license): a mixture-of-
+experts model with 321 B parameters, of which about 18 B work on each token, and a context of up to 1 M tokens.
+Models this size normally need a server with hundreds of GB of GPU memory. Maya's engine keeps the most-used experts
+on your GPU(s), the next ones in RAM and the rest on your NVMe SSD, and moves them as the conversation needs them.
+Nothing leaves your machine.
+
+It is built on [Strata](https://github.com/Niko1221/Strata) (MIT): Maya's engine is Strata's engine rewritten for
+GLM-5.3-Flash, and the server and dashboard are Strata's.
+
+## How fast is it?
+
+Measured with Unsloth's **UD-IQ1_S** quant of the model (93 GB). A token is about ¾ of a word.
+
+| Machine | Benchmark (greedy, fixed prompt) | Real chat | Reads your prompt |
+| --- | ---: | ---: | ---: |
+| **2x Tesla V100 32 GB** (PCIe 3), Xeon E5-2690 v4, 30 GB RAM, one NVMe | **45-50 tokens/s** (200-1,000-token answers) | **~30 tokens/s**, ~40 once warm (60-150-token answers) | 3.5 ms/token (2.6K-token prompt) |
+| **1x Tesla V100 32 GB** (PCIe 3), Core i5-12600T, 64 GB RAM, PCIe 4.0 NVMe | **22-24 tokens/s** (200-token answers) | **~17 tokens/s** (five different topics in a row, 400-token answers) | 5.0 ms/token (2.6K-token prompt) |
+
+Project Maya's own quant of GLM-5.3-Flash, made from the official FP8 weights, is in progress.
+
+- *Benchmark*: the engine alone, greedy decoding, the same prompt file every run, warm caches.
+- *Real chat*: answers through the dashboard, from a fresh start until the caches are warm. The first answers after
+  a start are the slowest: the expert caches fill with the experts your conversations use.
+- Only these two machines have been measured. Other GPUs should work (see below) but have no numbers yet.
+
+## What you need
+
+| | |
+| --- | --- |
+| **GPU** | NVIDIA, compute capability 7.0 or newer (V100 and newer). **24-32 GB of VRAM, or two GPUs** that share the model (each holds half of the layers). Measured: 1 and 2x V100 32 GB. |
+| **RAM** | **64 GB recommended.** It runs with less, but every expert that does not fit in RAM is read from the SSD while it answers, which is slower. |
+| **Disk** | **~100 GB free on a fast NVMe SSD** (the model is 93 GB, and the engine reads from it while it answers). Not a hard disk. |
+| **System** | Linux (x86-64, CPU with AVX2), NVIDIA driver, CUDA toolkit 12.x (CUDA 13 can be used for Turing and newer, but it no longer compiles for Volta/V100), g++, Python 3.10+. Windows and WSL2 are not supported yet ([why](#windows)). |
+
+The installer checks all of this and prints the exact command for anything missing. It installs nothing
+system-wide by itself.
+
+## Quick start
+
+```sh
+# 1. get Maya
+git clone <your Maya repository URL> maya && cd maya
+
+# 2. set it up and start it (asks before every download)
+./maya.sh
+
+# 3. open the dashboard
+#    http://127.0.0.1:8080
+```
+
+The first run takes 20-40 minutes plus the download:
+
+1. checks the PC (GPUs, driver, CUDA toolkit, compiler, RAM, CPU);
+2. asks which GPUs to use (both, when there are two) and how much context (32K recommended);
+3. installs its Python packages into `.venv` and gets llama.cpp's source at a pinned commit (it lists both and asks);
+4. compiles the engine for your GPU(s) (10-30 minutes, once);
+5. **the model**: it shows the source, the size (93 GB) and the exact `curl` commands, and downloads only when you
+   answer `y`. You can run the commands yourself instead, or use files you already have: `./maya.sh --gguf-dir DIR`;
+6. builds the *pack* - the engine's index of the model files, about 1 GB, written into the model folder;
+7. writes `maya-<model>.json` and `run-maya-<model>.sh`, and starts the dashboard.
+
+**Next time**, `./maya.sh` starts it right away. Ctrl+C stops it. After a `git pull`, `./maya.sh` recompiles only
+what changed before it starts.
+
+> **The start takes a few minutes**: the engine pins most of the free RAM (all but about 6 GB) for its expert tier
+> and warms its caches. Other programs get little RAM while Maya runs.
+
+### Options
+
+| Option | |
+| --- | --- |
+| `--setup` | set up again (other GPUs, context, model folder) |
+| `--check` | only check the PC |
+| `--gguf-dir DIR` | use GLM-5.3-Flash GGUF files you already have (the folder must be writable: the pack goes inside it) |
+| `--data-dir DIR` | where a downloaded model goes (default `../Maya-data`); put it on the NVMe |
+| `--download-model` | download the model without asking (the commands and size are still printed) |
+| `--gpu N` / `--gpus 0,1` | one GPU, or two that split the model |
+| `--context N` | context length in tokens: 8192, 32768 (default), 65536, 131072 |
+| `--port N`, `--host 0.0.0.0 --api-key KEY` | another port; reachable from your network (always set a key) |
+| `--env KEY=VALUE` | an engine setting kept in the config (see [Tuning](#tuning)) |
+| `--host-compiler g++-12` | when your g++ is newer than your CUDA accepts ("unsupported GNU version") |
+| `--rebuild`, `--repack` | compile the engine / build the pack again |
+| `--yes` | the recommended answers (the model download still needs `--download-model`) |
+
+## Using it
+
+- **In the browser:** `http://127.0.0.1:8080` - **Chat**, and a live **Monitor** of the model, the expert caches
+  and your GPU/CPU/RAM.
+- **Your apps and coding agents:** an "OpenAI-compatible" provider with the base URL `http://127.0.0.1:8080/v1`
+  (any model name; any API key unless you set one). Anthropic's API: `http://127.0.0.1:8080/v1/messages`
+  (Claude Code: `ANTHROPIC_BASE_URL=http://127.0.0.1:8080`).
+- **Thinking:** off, low, medium (the default) or high, in the chat menu or the request's "reasoning effort".
+- **From another device:** `./maya.sh --setup --host 0.0.0.0 --api-key <secret>`. Always set a key.
+- **One request at a time:** others wait their turn.
+
+## Tuning
+
+The engine sizes itself: it splits the layers across two GPUs when it has two, fills each GPU's free VRAM with
+experts, sizes its RAM tier from the free RAM, and measures the CPU against the PCIe link at start to decide how many
+RAM experts the CPU computes itself. These settings change that (put them in the config with `--env`, or into its
+`"env"` block):
+
+| Setting | Default | |
+| --- | --- | --- |
+| `STRATA_GLM_RAM_HEADROOM_GB` | 6 | RAM left free for the system when the RAM tier is sized |
+| `STRATA_GLM_RAM_GB` | from free RAM | a fixed RAM-tier size in GB |
+| `STRATA_GLM_SPLIT` | middle (+2) with 2 GPUs | the first layer of the second GPU; `0` = one GPU |
+| `STRATA_GLM_CPU_LANE` | one thread per physical core | CPU threads for RAM-tier experts; `0` = off |
+| `STRATA_GLM_USAGE` | `<pack>/expert_usage.txt` | where your expert usage is kept between starts (the warm-up loads your experts first); `0` = off |
+| `STRATA_GLM_TIMING`, `STRATA_GLM_POOL_STATS` | off | `1` = timing and cache statistics in the engine log |
+
+## Something went wrong?
+
+- **"nvcc ... cannot build for these GPUs"** - Volta needs CUDA 12.x; Blackwell needs 12.8 or newer. Several toolkits
+  can be installed side by side; the installer takes the newest that fits.
+- **"unsupported GNU version"** while compiling - run `./maya.sh --setup --host-compiler g++-12` (install `g++-12`
+  first).
+- **Slow, and the SSD is busy all the time** - not enough free RAM for the experts: close programs, or add RAM. A
+  hard disk instead of an NVMe SSD is very slow.
+- **The download stopped** - run `./maya.sh` again (or the printed `curl` command): it continues where it stopped.
+- **Port 8080 is in use** - Maya (or another server) is already running; `--port 8081` starts another one.
+- The engine's log is `maya-<model>.log` in the Maya folder.
+
+## Windows
+
+Not yet. The engine's model loader maps the model files with Linux calls (`mmap`, `O_DIRECT`) and has no Windows
+version yet. WSL2 does not work either: Strata measured that WSL2's GPU driver pins only about 1 GB of RAM, and Maya
+pins tens of GB. `START-MAYA.bat` says the same.
+
+## Credits and license
+
+- **Built on [Strata](https://github.com/Niko1221/Strata)** (MIT License, Copyright (c) 2026 Niko1221 and the Strata
+  contributors) - the engine Maya's engine grew from, the server and the dashboard - **and on
+  [ggml / llama.cpp](https://github.com/ggml-org/llama.cpp)** (MIT License, Copyright (c) 2023-2026 The ggml
+  authors) - the quantization formats, the CPU dot products and the prompt path's MMQ kernels, built from a pinned
+  commit (`third_party/ggml/LICENSE`).
+- The model: [GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash) by zai-org (MIT); the UD-IQ1_S GGUF by
+  [Unsloth](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF). Model files keep their own licenses.
+- The dashboard's font: Outfit (SIL Open Font License 1.1, `serve/web/fonts/OFL.txt`).
+- Maya is open source under the [MIT License](LICENSE); the notices of Strata and ggml stay with every copy.

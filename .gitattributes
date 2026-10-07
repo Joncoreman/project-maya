@@ -1,0 +1,12 @@
+# Frozen prompts are hashed byte for byte (manifest sha256): never convert their line endings.
+bench/prompts/** -text
+
+# launchers keep their platform line endings wherever the repository is cloned
+*.sh text eol=lf
+*.bat text eol=crlf
+
+# the glm5_next parity fixtures are BINARY float data - never convert line endings
+data/glm5-synth-dumps/** -text
+data/glm5-synth.gguf -text
+data/glm5-synth-dumps12/** -text
+data/glm5-big-dumps/** -text
