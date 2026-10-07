@@ -51,20 +51,29 @@ Measured with Maya-S through the dashboard. A token is about ¾ of a word.
 The installer checks all of this and prints the exact command for anything missing. It installs nothing
 system-wide by itself.
 
-## Quick start
+## Install
 
-```sh
-# 1. get Maya
-git clone <your Maya repository URL> maya && cd maya
+**You need:** an NVIDIA GPU (V100 / RTX 20 or newer) on Linux, ~100 GB free on an NVMe SSD, a current NVIDIA driver
+and the CUDA toolkit (12.x for a V100; the engine is compiled for your GPU). Everything else - Python, the engine, the
+model - is set up for you, the way Strata does it.
 
-# 2. set it up and start it (asks before every download)
-./maya.sh
+1. Get Project Maya:
+   ```sh
+   git clone https://github.com/mw00/project-maya.git && cd project-maya
+   ```
+   (or [download it](https://github.com/mw00/project-maya/archive/refs/heads/main.zip) and unzip it).
+2. Run **`./setup.sh`** (the same as `./maya.sh`).
+3. Answer a few questions - or just press Enter each time for the recommended choice: which GPUs, how much context,
+   pictures. Then it downloads and builds everything (it shows each download first; you can stop and it picks up
+   where it left off) and **starts the model**. Open the dashboard at `http://127.0.0.1:8080`.
 
-# 3. open the dashboard
-#    http://127.0.0.1:8080
-```
+**Next time**, just run `./setup.sh` again: it starts right away, nothing is downloaded twice. Ctrl+C stops it.
 
-The first run takes 20-40 minutes plus the download:
+**Updating:** `git pull`, then `./setup.sh`: it recompiles only what changed and starts.
+
+### What the first run does
+
+It takes 20-40 minutes plus the download:
 
 1. checks the PC (GPUs, driver, CUDA toolkit, compiler, RAM, CPU);
 2. asks which GPUs to use (both, when there are two) and how much context (32K recommended);
@@ -77,9 +86,6 @@ The first run takes 20-40 minutes plus the download:
 7. **pictures**: compiles the image encoder (10-20 minutes, once) and fetches its files (1.1 GB, shown and asked
    first); `--no-vision` skips it;
 8. writes `maya-<model>.json` and `run-maya-<model>.sh`, and starts the dashboard.
-
-**Next time**, `./maya.sh` starts it right away. Ctrl+C stops it. After a `git pull`, `./maya.sh` recompiles only
-what changed before it starts.
 
 > **The start takes a few minutes**: the engine pins most of the free RAM (all but about 6 GB) for its expert tier
 > and warms its caches. Other programs get little RAM while Maya runs.
