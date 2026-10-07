@@ -22,7 +22,7 @@ experts, and it keeps the model's MTP block, which drafts tokens ahead (speculat
 
 Against the FP8 model on held-out text it picks the same next token 83% of the time (85% leaving out text the FP8
 model has memorized), at a perplexity of 4.19 against FP8's 3.51, and it writes long answers (6,000-14,000 tokens) without
-looping. Task accuracy against FP8 (ARC, HellaSwag, WinoGrande, PIQA) is being measured.
+looping. On zero-shot tasks it keeps **97.9%** of the FP8 model's accuracy (ARC-Easy, ARC-Challenge, HellaSwag, WinoGrande, PIQA; 400 questions each).
 Details: [bench/results/MAYA-S.md](bench/results/MAYA-S.md).
 
 ## How fast is it?

@@ -30,6 +30,19 @@ Maya-S through the engine's one-token decode path (`tools/maya_quant/kl_eval.py`
 | Perplexity | 3.51 | 4.19 |
 | Top-1 accuracy on the actual next token | 71.5% | 68.8% |
 
+## Task accuracy
+
+| Task (zero-shot) | FP8 | Maya-S | Recovery |
+| --- | ---: | ---: | ---: |
+| ARC-Easy (acc) | 87.2 | 86.2 | 98.9% |
+| ARC-Challenge (acc norm) | 71.0 | 68.2 | 96.1% |
+| HellaSwag (acc norm) | 88.5 | 87.5 | 98.9% |
+| WinoGrande (acc) | 78.5 | 75.5 | 96.2% |
+| PIQA (acc norm) | 87.0 | 86.2 | 99.1% |
+| **Average** | **82.5** | **80.8** | **97.9%** |
+
+400 questions per task, the same questions for both models, scored the way lm-evaluation-harness scores them (the answer with the highest log-likelihood; length-normalized where the choices differ in length) - the FP8 model run layer by layer in PyTorch, Maya-S through Project Maya's engine (`tools/maya_quant/zs_*.py`).
+
 ## Long answers and long context
 
 `tools/maya_quant/loop_test.py` (a three.js scene, a canvas animation, an explanation, a study plan in Portuguese, a
