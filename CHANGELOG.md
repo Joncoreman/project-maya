@@ -3,6 +3,15 @@
 Every release is on GitHub (Releases) with these notes. Update: `git pull`, then `./setup.sh` (Windows:
 `START-MAYA.bat`) - it recompiles only what changed and starts.
 
+## v1.2.1 - 2026-10-07
+
+A one-command report for problems and speeds: `./maya.sh --report` (Windows: `START-MAYA.bat --report`).
+
+- **`--report`** writes `maya-report.txt` in the Maya folder: your GPUs (VRAM, driver, PCIe link), CPU, RAM, disks,
+  your Maya setup (model, context, GPUs) and the engine log's speed lines - how the model is split across VRAM, RAM and
+  the SSD, and where each token's time goes. Attach it when you report a problem or a speed, so the engine can be
+  tuned for your machine. Nothing is sent anywhere; your home folder shows as `~` and no API key is included.
+
 ## v1.2.0 - 2026-10-07
 
 Faster prefill (how fast Maya reads your prompt): up to 46% on two GPUs and up to 2x on one.

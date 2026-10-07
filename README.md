@@ -147,6 +147,11 @@ RAM experts the CPU computes itself. These settings change that (put them in the
 
 ## Something went wrong?
 
+**Reporting a problem or your speed:** run **`./maya.sh --report`** (Windows: `START-MAYA.bat --report`) right after
+a slow answer or the error, and attach the `maya-report.txt` it writes in the Maya folder. It holds your GPUs, CPU,
+RAM and disks, your Maya setup and the engine's speed lines - where the time goes, token by token - so the engine
+can be tuned for your machine. Nothing is sent anywhere; your home folder shows as `~` and no API key is included.
+
 - **"nvcc ... cannot build for these GPUs"** - Volta needs CUDA 12.x; Blackwell needs 12.8 or newer. Several toolkits
   can be installed side by side; the installer takes the newest that fits.
 - **"unsupported GNU version"** while compiling - run `./maya.sh --setup --host-compiler g++-12` (install `g++-12`

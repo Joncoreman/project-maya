@@ -947,6 +947,82 @@ def start(cfg_path: Path, a) -> int:
     return subprocess.call(cmd)
 
 
+# ------------------------------------------------------------------------------------------------ the report
+# the engine log's lines that tell where the time goes: how the model was split across VRAM / RAM / the SSD, the
+# prompt path's chunks, and the per-token breakdown ("glm stat": VRAM hits, RAM fetches, disk reads, CPU lane)
+REPORT_LINES = re.compile(r"glm fast:|glm prefill: CUDA|glm split|glm stat|glm prefill: \d|ERR|error|failed|out of memory",
+                          re.I)
+
+
+def report(version: str) -> int:
+    """--report: maya-report.txt in the Maya folder - this PC, the installed setup and the engine log's speed lines,
+    for a bug or speed report.  Nothing is sent anywhere; the home folder is written as ~ and API keys are left out."""
+    home = str(Path.home())
+    lines = []
+
+    def add(title, text=""):
+        lines.append(f"## {title}")
+        lines.extend(str(text).rstrip().replace(home, "~").splitlines() or ["(nothing)"])
+        lines.append("")
+
+    git = S.out(["git", "-C", str(ROOT), "log", "-1", "--format=%h %cd", "--date=short"]).strip()
+    add("Maya", f"version {version}, commit {git or '?'}, Python {sys.version.split()[0]}, "
+                f"{sys.platform}{' (WSL)' if S.is_wsl() else ''}")
+    import platform
+    add("System", f"{platform.platform()}")
+    add("GPUs", S.out(["nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,driver_version,"
+                                     "pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max,power.limit,"
+                                     "temperature.gpu", "--format=csv"]) or "nvidia-smi did not answer")
+    cpu, avx2, avx512 = S.cpu_info()
+    total, avail = mem_gb()
+    pf = S.page_file_gb()
+    add("CPU and RAM", f"{cpu}, {os.cpu_count()} threads, {'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'}\n"
+                       f"RAM {total:.1f} GB, {avail:.1f} GB available now" +
+                       (f", page file {pf:.0f} GB" if pf is not None else ""))
+    if WIN:
+        disks = S.out(["powershell", "-NoProfile", "-Command", "Get-PhysicalDisk | Format-Table -AutoSize "
+                                                              "FriendlyName,MediaType,BusType,Size | Out-String -Width 200"])
+    else:
+        disks = S.out(["lsblk", "-d", "-o", "NAME,MODEL,ROTA,TRAN,SIZE"])
+    add("Disks", disks)
+    stamp = read_json(STAMP)
+    add("Engine build", json.dumps({k: stamp.get(k) for k in ("archs", "nvcc", "host_compiler", "date")})
+        if stamp else "not compiled yet")
+    have = configs()
+    if not have:
+        add("Setup", f"no maya-*.json yet: {ME} has not finished a setup here")
+    for c in have:
+        cfg = read_json(c)
+        args = cfg.get("args") or []
+        pack = Path(args[args.index("--glm-pack") + 1]) if "--glm-pack" in args[:-1] else None
+        ctx = args[args.index("--max-context") + 1] if "--max-context" in args[:-1] else "?"
+        d = pack.parent if pack else None
+        where = ""
+        if d is not None and d.exists():
+            gb = sum(p.stat().st_size for p in d.glob("*.gguf")) / 1e9
+            where = (f"\nmodel folder {d}: {gb:.1f} GB of GGUF, {shutil.disk_usage(d).free / 1e9:.0f} GB free, "
+                     f"{'a spinning hard disk' if rotational(d) else 'not a hard disk'}")
+        add(f"Setup {c.name}", f"model {(cfg.get('installer') or {}).get('quant', '?')}, context {ctx}, "
+                               f"GPUs {cfg.get('gpu')}, images {'on' if cfg.get('vision') else 'off'}, "
+                               f"settings {json.dumps(cfg.get('env') or {})}" + where)
+        log = Path(cfg.get("log") or c.with_suffix(".log"))
+        if log.exists():
+            text = log.read_text(encoding="utf-8", errors="replace").splitlines()
+            picked = [x for x in text if REPORT_LINES.search(x) and "warming the expert tiers" not in x]
+            add(f"Engine log {log.name}: the speed and memory lines (last 80 of {len(picked)})", "\n".join(picked[-80:]))
+            add(f"Engine log {log.name}: the last 25 lines", "\n".join(text[-25:]))
+        else:
+            add(f"Engine log {log.name}", "not written yet (start Maya once and ask it something)")
+    out = ROOT / "maya-report.txt"
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    say()
+    ok(f"written: {out}")
+    say("  Attach this file to your report (GitHub issue, X, or wherever you are asking). It has this PC's hardware,")
+    say("  your Maya setup and the engine's speed lines - no API key, and your home folder is shown as ~.")
+    say("  Best: run it right after a slow answer, so the log has that answer's numbers.")
+    return 0
+
+
 # ------------------------------------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -979,10 +1055,15 @@ def main() -> int:
     ap.add_argument("--llama-dir", help="a llama.cpp checkout at the pinned commit, instead of downloading its source")
     ap.add_argument("--rebuild", action="store_true", help="compile the engine again")
     ap.add_argument("--repack", action="store_true", help="build the pack again")
+    ap.add_argument("--report", action="store_true", help="write maya-report.txt - this PC, the setup and the engine's "
+                                                          "speed lines - to attach when you report a problem or a "
+                                                          "speed (nothing is sent anywhere)")
     a = ap.parse_args()
     version = (HERE / "VERSION").read_text(encoding="utf-8").strip() if (HERE / "VERSION").exists() else "?"
     say(f"Project Maya v{version} - GLM-5.3-Flash on your own NVIDIA GPU(s). Built on Strata (MIT) and ggml/llama.cpp "
         "(MIT).")
+    if a.report:
+        return report(version)
 
     have = configs()
     setting_up = a.setup or a.check or a.no_start or a.gguf_dir or a.model or a.rebuild or a.repack or a.download_model
