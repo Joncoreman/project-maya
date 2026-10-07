@@ -20,9 +20,9 @@ pool across RAM and VRAM. It is made from Z.ai's FP8 release -
 the precision the model is served at - with statistics from the FP8 model itself and error-feedback rounding of the
 experts, and it keeps the model's MTP block, which drafts tokens ahead (speculative decoding on two GPUs).
 
-Against the FP8 model on held-out text it picks the same next token 83% of the time (85% leaving out text the FP8
-model has memorized), at a perplexity of 4.19 against FP8's 3.51, and it writes long answers (6,000-14,000 tokens) without
-looping. On zero-shot tasks it keeps **97.9%** of the FP8 model's accuracy (ARC-Easy, ARC-Challenge, HellaSwag, WinoGrande, PIQA; 400 questions each).
+**It keeps 97.9% of the full FP8 model's accuracy** on zero-shot tasks (ARC-Easy, ARC-Challenge, HellaSwag,
+WinoGrande, PIQA; 400 questions each, the same for both models). On held-out text it picks the same next token as the
+FP8 model 83% of the time, and it writes long answers (6,000-14,000 tokens) without looping.
 Details: [bench/results/MAYA-S.md](bench/results/MAYA-S.md).
 
 ## How fast is it?
