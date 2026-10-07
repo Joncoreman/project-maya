@@ -5,14 +5,14 @@ Every release is on GitHub (Releases) with these notes. Update: `git pull`, then
 
 ## v1.2.0 - 2026-10-07
 
-Faster long prompts: up to 46% on two GPUs and up to 2x on one.
+Faster prefill (how fast Maya reads your prompt): up to 46% on two GPUs and up to 2x on one.
 
-- **Prompt speed:** the experts a prompt needs that are neither in VRAM nor in RAM are read from the SSD ahead of
+- **Prefill speed:** the experts a prompt needs that are neither in VRAM nor in RAM are read from the SSD ahead of
   time into a deeper buffer (the reader was keeping the NVMe at about a quarter of its speed), the next layer's
   experts are read while the current one computes, and the prompt is cut into bigger pieces on bigger cards (fewer
-  times every expert is fetched). Measured on 2x Tesla V100 32 GB with 30 GB RAM, prompts of 2k / 8k / 16k / 30k
-  tokens: 240 / 331 / 345 / - -> 273 / 428 / 487 / 506 tokens/s. On one of those GPUs: 8k-token prompt 115 -> 226
-  tokens/s. Answers are unchanged in quality (the same text, up to rounding).
+  times every expert is fetched). Prefill measured on 2x Tesla V100 32 GB with 30 GB RAM, prompts of 2k / 8k / 16k /
+  30k tokens: 240 / 331 / 345 / - -> 273 / 428 / 487 / 506 tokens/s. On one of those GPUs: prefill of an 8k-token
+  prompt 115 -> 226 tokens/s. Answers are unchanged in quality (the same text, up to rounding).
 - **Support Project Maya:** [buymeacoffee.com/peasantsmith](https://buymeacoffee.com/peasantsmith) (README, and the
   Sponsor button on GitHub).
 - README: how Maya grew out of Strata; exported chats are named `maya-chat-*.md`.

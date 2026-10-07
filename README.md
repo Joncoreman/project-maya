@@ -33,7 +33,7 @@ Details: [bench/results/MAYA-S.md](bench/results/MAYA-S.md).
 
 Measured with Maya-S through the dashboard. A token is about ¾ of a word.
 
-| Machine | Answers | Reads your prompt |
+| Machine | Decode (writing the answer) | Prefill (reading your prompt) |
 | --- | ---: | ---: |
 | **2x Tesla V100 32 GB** (PCIe 3), Xeon E5-2690 v4, 30 GB RAM, one NVMe | **up to 40 tokens/s** | **up to 500 tokens/s** |
 
