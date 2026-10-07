@@ -1,7 +1,10 @@
 <h1 align="center">Project Maya</h1>
 
 <p align="center"><b>Run GLM-5.3-Flash - a 321-billion-parameter AI model - on your own NVIDIA GPU(s)</b><br>
-One or two NVIDIA GPUs · Linux · chat in the browser, pictures, OpenAI- and Anthropic-compatible API</p>
+One or two NVIDIA GPUs · Linux, Windows (experimental) · chat in the browser, pictures, OpenAI- and
+Anthropic-compatible API</p>
+
+<p align="center"><a href="https://buymeacoffee.com/peasantsmith">☕ Support Project Maya - buy me a coffee</a></p>
 
 Maya runs **[GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash)** (zai-org, MIT license): a mixture-of-
 experts model with 321 B parameters, of which about 18 B work on each token, and a context of up to 1 M tokens.
@@ -9,8 +12,9 @@ Models this size normally need a server with hundreds of GB of GPU memory. Maya'
 on your GPU(s), the next ones in RAM and the rest on your NVMe SSD, and moves them as the conversation needs them.
 Nothing leaves your machine.
 
-It is built on [Strata](https://github.com/Niko1221/Strata) (MIT): Maya's engine is Strata's engine rewritten for
-GLM-5.3-Flash, and the server and dashboard are Strata's.
+Maya grew out of [Strata](https://github.com/Niko1221/Strata) (MIT): its engine started from Strata's and was rewritten
+for GLM-5.3-Flash (the expert tiers across VRAM, RAM and SSD, the two-GPU split, MTP decoding), and its server and
+dashboard started from Strata's and were reworked for Maya (a new dashboard, images on demand, the thinking budget).
 
 ## The model: Maya-S
 
@@ -173,10 +177,15 @@ been run on a Windows PC with an NVIDIA GPU yet, so tell us how it runs on yours
 - Not WSL2: Strata measured that WSL2's GPU driver pins only about 1 GB of RAM, and Maya pins tens of GB. Run
   `START-MAYA.bat` in Windows itself.
 
+## Support
+
+Project Maya is free and open source. If it is useful to you, you can support its development:
+**[buymeacoffee.com/peasantsmith](https://buymeacoffee.com/peasantsmith)**. Thank you!
+
 ## Credits and license
 
 - **Built on [Strata](https://github.com/Niko1221/Strata)** (MIT License, Copyright (c) 2026 Niko1221 and the Strata
-  contributors) - the engine Maya's engine grew from, the server and the dashboard - **and on
+  contributors) - the code Maya's engine, server and dashboard grew from - **and on
   [ggml / llama.cpp](https://github.com/ggml-org/llama.cpp)** (MIT License, Copyright (c) 2023-2026 The ggml
   authors) - the quantization formats, the CPU dot products and the prompt path's MMQ kernels, built from a pinned
   commit (`third_party/ggml/LICENSE`).
