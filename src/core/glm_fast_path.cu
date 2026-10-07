@@ -673,12 +673,17 @@ bool Glm5Model::fast_setup(std::string& err) {
             R.stride = cls_stride[c];
             int64_t n = (int64_t) ((double) budget * cls_weight[c] / wsum / (double) R.stride);
             n = std::max<int64_t>(n, 16);   // a floor so a miss always has somewhere to land
-            // never more than the experts of the class that the VRAM pool does not hold
-            n = std::min<int64_t>(n, (int64_t) (cls_weight[c] / (double) R.stride));
+            // never more than the experts of the class that the VRAM pool does not hold.  When the pool holds every
+            // expert (a big card: 288 of 288 slots a layer) that is a few spares' worth - below the floor for a class
+            // of one layer (the NextN block), which then never allocated and stopped the start ("did not allocate")
+            const int64_t cap = std::max<int64_t>(1, (int64_t) (cls_weight[c] / (double) R.stride));
+            n = std::min<int64_t>(n, cap);
+            const int64_t least = std::min<int64_t>(16, cap);   // the floor, or the whole cap when that is smaller
             void* p = nullptr;
-            while (n >= 16 && cudaHostAlloc(&p, (size_t) n * R.stride, cudaHostAllocPortable) != cudaSuccess) {
+            while (n >= least && cudaHostAlloc(&p, (size_t) n * R.stride, cudaHostAllocPortable) != cudaSuccess) {
                 cudaGetLastError();
-                n = n * 7 / 8;
+                p = nullptr;
+                n = (n > least && n * 7 / 8 < least) ? least : n * 7 / 8;
             }
             if (p == nullptr) {
                 err = "glm fast: the pinned RAM tier did not allocate";
