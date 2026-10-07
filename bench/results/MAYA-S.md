@@ -52,6 +52,6 @@ experts: no loop in 14 long answers, and the fact found at every size.
 
 ## Speed
 
-Through the dashboard on 2x Tesla V100 32 GB with 30 GB of RAM: up to 40 tokens/s answering and up to 440 tokens/s
+Through the dashboard on 2x Tesla V100 32 GB with 30 GB of RAM: up to 40 tokens/s answering and up to 500 tokens/s
 reading the prompt, and the speed holds at long context (the DSA attention's pool selection is linear in the context:
 0.07 ms per layer at 64K tokens, where it was 21.5 ms).
