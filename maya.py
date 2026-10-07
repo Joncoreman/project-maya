@@ -63,9 +63,28 @@ HF = "https://huggingface.co/{repo}/resolve/{revision}/{folder}/{file}"
 # file name: every download is verified.  "vision": the image encoder's files (the mmproj, made from the official
 # vision tower, and the tokenizer it reads its markers with).
 MODELS = {
+    "Maya-S-v2-IQ2_XXS": {
+        "about": "Project Maya's compact quant, v2: error-feedback-rounded IQ2_XXS gate/up experts, IQ2_S/IQ3_XXS "
+                 "down projections, Q6_K attention, the MTP draft block, made from Z.ai's FP8 release",
+        "repo": "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "revision": "main", "folder": "Maya-S-v2-IQ2_XXS",
+        "file": "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-{i:05d}-of-{n:05d}.gguf", "shards": 3, "download_gb": 96.5,
+        "sha256": {
+            "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf":
+                "a507f2b7b25e04624ee55c631d3b281caea7cfffc747e5247970cd5a7ea91b3f",
+            "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00002-of-00003.gguf":
+                "2d65d88a69f8dc124c8d24bd33b33161ddab218918b4253ad4f500aeede84df5",
+            "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00003-of-00003.gguf":
+                "a6a981c4fee7a53d78bdbd97d8f465d48ddf439cf938ff90617f395e0351b5a6"},
+        "vision": {
+            "folder": "vision", "mmproj": "mmproj-GLM-5.3-Flash-F16.gguf", "vocab": "GLM-5.3-Flash-vocab.gguf",
+            "download_gb": 1.14,
+            "sha256": {"mmproj-GLM-5.3-Flash-F16.gguf":
+                           "3627575df16bd152db0f3fd7e488d270b33f3a9e6c7fa3b1b8ac381faafde882",
+                       "GLM-5.3-Flash-vocab.gguf":
+                           "8f53cb1bd2e631c14ef413e3284735d9e53f3c508d07a6f609e705b487105912"}}},
     "Maya-S-IQ2_XXS": {
-        "about": "Project Maya's compact quant: error-feedback-rounded IQ2_XXS experts, Q6_K attention, the MTP "
-                 "draft block, made from Z.ai's FP8 release",
+        "about": "Project Maya's compact quant, v1: 6 GB smaller than v2, a little further from the original - "
+                 "error-feedback-rounded IQ2_XXS experts, Q6_K attention, the MTP draft block",
         "repo": "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "revision": "main", "folder": "Maya-S-IQ2_XXS",
         "file": "GLM-5.3-Flash-Maya-S-IQ2_XXS-{i:05d}-of-{n:05d}.gguf", "shards": 2, "download_gb": 90.1,
         "sha256": {

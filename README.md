@@ -14,16 +14,22 @@ GLM-5.3-Flash, and the server and dashboard are Strata's.
 
 ## The model: Maya-S
 
-Maya installs **Maya-S**, Project Maya's own compact quant of GLM-5.3-Flash (90 GB,
+Maya installs **Maya-S v2**, Project Maya's own compact quant of GLM-5.3-Flash (96.5 GB,
 [on Hugging Face](https://huggingface.co/peasantsmith/GLM-5.3-Flash-Maya-GGUF)), made for PCs with a smaller memory
 pool across RAM and VRAM. It is made from Z.ai's FP8 release -
 the precision the model is served at - with statistics from the FP8 model itself and error-feedback rounding of the
 experts, and it keeps the model's MTP block, which drafts tokens ahead (speculative decoding on two GPUs).
 
-Against the FP8 model on held-out text it picks the same next token 82% of the time (84% leaving out text the FP8
-model has memorized), at a perplexity of 4.31 against FP8's 3.51, and it ran 14 long answers (6,000-14,000 tokens)
-without a loop. Task accuracy against FP8 (ARC, HellaSwag, WinoGrande, PIQA) is being measured.
-Details: [bench/results/MAYA-S-V1.md](bench/results/MAYA-S-V1.md).
+Against the FP8 model on held-out text it picks the same next token 83% of the time (85% leaving out text the FP8
+model has memorized), at a perplexity of 4.19 against FP8's 3.51; the Maya-S line ran 14 long answers (6,000-14,000
+tokens) without a loop. Task accuracy against FP8 (ARC, HellaSwag, WinoGrande, PIQA) is being measured.
+Details: [bench/results/MAYA-S-V2.md](bench/results/MAYA-S-V2.md), [MAYA-S-V1.md](bench/results/MAYA-S-V1.md).
+
+**Maya-S v1** (90.1 GB) is 6 GB smaller and a little further from the original. To install it instead:
+
+```sh
+./setup.sh --setup --model Maya-S-IQ2_XXS
+```
 
 ## How fast is it?
 
@@ -45,7 +51,7 @@ Measured with Maya-S through the dashboard. A token is about ¾ of a word.
 | --- | --- |
 | **GPU** | NVIDIA, compute capability 7.0 or newer (V100 and newer); one GPU, or two that share the model (each holds half of the layers). The engine fills whatever VRAM you have with the most-used experts: more VRAM is faster. Measured: 1 and 2x V100 32 GB. |
 | **RAM** | It runs with **32 GB** (the machine in the table above has 30 GB). More RAM keeps more experts close and is faster; what does not fit is read from the SSD while it answers. |
-| **Disk** | **~100 GB free on a fast NVMe SSD** (the model is 90 GB, its pictures encoder 1.1 GB, and the engine reads from the model while it answers). Not a hard disk. |
+| **Disk** | **~100 GB free on a fast NVMe SSD** (the model is 96.5 GB - v1 90 GB - its pictures encoder 1.1 GB, and the engine reads from the model while it answers). Not a hard disk. |
 | **System** | Linux (x86-64, CPU with AVX2), NVIDIA driver, CUDA toolkit 12.x (CUDA 13 can be used for Turing and newer, but it no longer compiles for Volta/V100), g++, Python 3.10+. Windows and WSL2 are not supported yet ([why](#windows)). |
 
 The installer checks all of this and prints the exact command for anything missing. It installs nothing
@@ -79,7 +85,7 @@ It takes 20-40 minutes plus the download:
 2. asks which GPUs to use (both, when there are two) and how much context (32K recommended);
 3. installs its Python packages into `.venv` and gets llama.cpp's source at a pinned commit (it lists both and asks);
 4. compiles the engine for your GPU(s) (10-30 minutes, once);
-5. **the model**: it shows the source, the size (90 GB) and the exact `curl` commands, and downloads only when you
+5. **the model**: it shows the source, the size (96.5 GB) and the exact `curl` commands, and downloads only when you
    answer `y`; every file is checked against its published sha256. You can run the commands yourself instead, or use
    files you already have: `./maya.sh --gguf-dir DIR`;
 6. builds the *pack* - the engine's index of the model files, about 1 GB, written into the model folder;
@@ -100,6 +106,7 @@ It takes 20-40 minutes plus the download:
 | `--data-dir DIR` | where a downloaded model goes (default `../Maya-data`); put it on the NVMe |
 | `--download-model` | download the model without asking (the commands and size are still printed) |
 | `--no-vision` | text only: no image encoder |
+| `--model Maya-S-IQ2_XXS` | Maya-S v1 (90.1 GB) instead of v2 |
 | `--gpu N` / `--gpus 0,1` | one GPU, or two that split the model |
 | `--context N` | context length in tokens: 8192, 32768 (default), 65536, 131072 |
 | `--port N`, `--host 0.0.0.0 --api-key KEY` | another port; reachable from your network (always set a key) |
