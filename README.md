@@ -26,19 +26,17 @@ Details: [bench/results/MAYA-S-V1.md](bench/results/MAYA-S-V1.md).
 
 ## How fast is it?
 
-Measured with Maya-S. A token is about ¾ of a word.
+Measured with Maya-S through the dashboard. A token is about ¾ of a word.
 
-| Machine | Answers (through the dashboard) | Reads your prompt |
+| Machine | Answers | Reads your prompt |
 | --- | ---: | ---: |
-| **2x Tesla V100 32 GB** (PCIe 3), Xeon E5-2690 v4, 30 GB RAM, one NVMe | **30-33 tokens/s** with 1K-32K tokens of context, **~29** at 60K | 380-440 tokens/s |
-| **1x Tesla V100 32 GB** (PCIe 3), Core i5-12600T, 64 GB RAM, PCIe 4.0 NVMe | **~16 tokens/s** (8K-token prompt) | 250 tokens/s |
+| **2x Tesla V100 32 GB** (PCIe 3), Xeon E5-2690 v4, 30 GB RAM, one NVMe | **up to 40 tokens/s** | **up to 440 tokens/s** |
 
-- 300-token answers at temperature 1.0 with thinking off, through the dashboard; the 1x V100 row through the engine
-  directly, greedy, measured before the long-context fix below (it will be measured again).
 - The speed holds with context: the attention's selection step is linear in the context length, so a 60K-token
-  conversation answers about as fast as a short one.
+  conversation keeps answering fast.
 - The first answers after a start are the slowest: the expert caches fill with the experts your conversations use.
-- Only these two machines have been measured. Other GPUs should work (see below) but have no numbers yet.
+- Single-GPU numbers (1x V100 32 GB, 64 GB RAM) are being measured. Other GPUs should work (see below) but have no
+  numbers yet.
 
 ## What you need
 
