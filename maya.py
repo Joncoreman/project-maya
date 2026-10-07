@@ -433,41 +433,70 @@ def compile_engine(archs, gpu_ids, nvcc, host_compiler, llama: Path, src: str, s
     return meta
 
 
-def host_compiler_for(nvcc: str, given: str | None) -> str | None:
-    """The C++ compiler nvcc builds with: --host-compiler; else the default g++ when nvcc accepts it; else the newest
-    installed g++-N it does.  Each is tried on a small CUDA file: nvcc refuses a g++ newer than its CUDA supports, and
-    a newer glibc's math headers can clash with an older CUDA's.  None: the default."""
-    if given:
-        return given
+PROBE_CU = """#include <cmath>
+#include <string>
+#include <vector>
+__global__ void k(float* x) { x[0] = rsqrtf(x[0]) + sinf(x[1]) + expf(x[2]) + __expf(x[3]) + sqrtf(x[4]); }
+int main() { std::vector<std::string> v(1); return (int) std::cos(0.0) - 1 + (int) v.size() - 1; }
+"""
+
+
+def toolchain_for(archs, nvcc_given: str | None, hc_given: str | None) -> tuple:
+    """(nvcc, host compiler or None for the default) that compile the engine's kind of CUDA here.  Every installed
+    toolkit that can build for these GPUs (newest first; --nvcc alone if given) with the default g++, then each
+    installed g++-N (newest first; --host-compiler alone if given), on a small file the way the engine compiles:
+    C++20 and the math functions the kernels use.  A toolkit refuses a g++ newer than it supports, and a newer
+    glibc's own rsqrtf/sinpi declarations clash with older CUDA headers - nothing but trying tells which pair works
+    on a given system."""
     import tempfile
-    names = sorted({q.name for d in ("/usr/bin", "/usr/local/bin") for q in Path(d).glob("g++-[0-9]*")
-                    if re.fullmatch(r"g\+\+-\d+", q.name)}, key=lambda n: -int(n[4:]))
+
+    def version(c):
+        v = re.search(r"release (\d+)\.(\d+)", S.out([c, "--version"]))
+        return (int(v.group(1)), int(v.group(2))) if v else None
+    if nvcc_given:
+        nvccs = [nvcc_given]
+    else:
+        cands = [shutil.which("nvcc"), os.environ.get("CUDA_PATH") and str(Path(os.environ["CUDA_PATH"]) / "bin" / "nvcc")]
+        cands += [str(q / "bin" / "nvcc") for q in sorted(Path("/usr/local").glob("cuda*"))]
+        cands += [str(q / "bin" / "nvcc") for q in sorted(Path("/opt").glob("cuda*"))] + ["/usr/bin/nvcc"]
+        seen, found = set(), []
+        for c in cands:
+            if c and Path(c).exists() and os.path.realpath(c) not in seen:
+                seen.add(os.path.realpath(c))
+                found.append((c, version(c)))
+        lo, hi = nvcc_range(archs)
+        nvccs = [c for c, v in sorted((f for f in found if f[1]), key=lambda f: f[1], reverse=True)
+                 if v >= lo and (hi is None or v < hi)]
+    hcs = [hc_given] if hc_given else [None] + sorted(
+        {q.name for d in ("/usr/bin", "/usr/local/bin") for q in Path(d).glob("g++-[0-9]*")
+         if re.fullmatch(r"g\+\+-\d+", q.name)}, key=lambda n: -int(n[4:]))
+    say("  Finding a CUDA toolkit and C++ compiler that build the engine here ...")
     with tempfile.TemporaryDirectory() as t:
         src = Path(t) / "probe.cu"
-        src.write_text("#include <cmath>\n#include <string>\n#include <vector>\n"
-                       "__global__ void k(float* x) { x[0] = sinf(x[0]); }\n"
-                       "int main() { std::vector<std::string> v(1); return (int) std::cos(0.0) - 1 + (int) v.size() - 1; }\n",
-                       encoding="utf-8")
-        for c in [None] + names:
-            cmd = [nvcc, "-c", str(src), "-o", str(Path(t) / "probe.o")] + (["-ccbin", shutil.which(c) or c] if c else [])
-            if subprocess.run(cmd, capture_output=True, text=True).returncode == 0:
-                if c:
-                    ok(f"nvcc builds with {c} (the default g++ is newer than this CUDA accepts)")
-                return c
-    warn("no installed g++ compiled a test file with this CUDA toolkit: the build will show why (install an older "
-         "g++, e.g. sudo apt-get install -y g++-13, or pass --host-compiler)")
-    return None
+        src.write_text(PROBE_CU, encoding="utf-8")
+        for nv in nvccs:
+            for c in hcs:
+                cmd = [nv, "-std=c++20", "-c", str(src), "-o", str(Path(t) / "probe.o")] + \
+                      (["-ccbin", shutil.which(c) or c] if c else [])
+                if subprocess.run(cmd, capture_output=True, text=True).returncode == 0:
+                    ok(f"{nv} with {c or 'the default g++'}")
+                    return nv, c
+    warn("no installed CUDA toolkit and g++ pair compiled a test file: the build will show why (" +
+         toolkit_hint(archs) + ")")
+    return (nvccs[0] if nvccs else nvcc_given), hc_given
 
 
 def build_step(a, pc, llama: Path) -> dict:
     step(4, "the engine")
     src = S.source_hash(S.ENGINE_SOURCES)              # src/, include/, third_party/ggml, CMakeLists.txt
-    hc = host_compiler_for(pc["nvcc"], a.host_compiler)
     meta = read_json(STAMP)
     if (EXE.exists() and not a.rebuild and meta.get("src") == src and set(pc["archs"]) <= set(meta.get("archs", []))
-            and hc == meta.get("host_compiler")):
+            and (not a.nvcc or a.nvcc == meta.get("nvcc"))
+            and (not a.host_compiler or a.host_compiler == meta.get("host_compiler"))):
         ok(f"engine already compiled for " + ", ".join(f"sm_{x}" for x in meta["archs"]) + f": {EXE}")
         return meta
+    nvcc, hc = toolchain_for(pc["archs"], a.nvcc, a.host_compiler)
+    pc["nvcc"] = nvcc or pc["nvcc"]
     return compile_engine(pc["archs"], [g["index"] for g in pc["gpus"]], pc["nvcc"], hc, llama, src)
 
 
