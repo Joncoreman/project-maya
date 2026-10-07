@@ -60,7 +60,7 @@ void kda_rec(const float* q, const float* k, const float* v, const float* g1_raw
 struct DsaPrepArgs {
     const float* qr_raw = nullptr; const float* q_a_norm = nullptr; float* qr = nullptr; void* qr16 = nullptr;
     int q_lora = 1536;
-    const float* kv_raw = nullptr; const float* kv_norm = nullptr; float* lat = nullptr; int kv_lora = 512;
+    const float* kv_raw = nullptr; const float* kv_norm = nullptr; uint16_t* lat = nullptr; int kv_lora = 512;
     const float* ik_raw = nullptr; const float* k_norm_w = nullptr; const float* k_norm_b = nullptr;
     float* ik_cache = nullptr;
     const float* ig_raw = nullptr; float* ig_cache = nullptr;
@@ -81,7 +81,7 @@ void dsa_select(const float* score, int score_ld, int p0, int kpool, int top_poo
                 int n_sel_max, int* cells, int* n_sel, cudaStream_t s);
 /// Absorbed MLA attention per token and head over the token's cells: ctx[t][h] = softmax(q_abs[t][h] . lat_c *
 /// scale) . lat_c.  kv_lora 512, n_head % 16 == 0.
-void mla_attn(const float* q_abs, const float* lat, const int* cells, const int* n_sel, int n_sel_max, int n_head,
+void mla_attn(const float* q_abs, const uint16_t* lat, const int* cells, const int* n_sel, int n_sel_max, int n_head,
               int kv_lora, float scale, int T, float* ctx, cudaStream_t s);
 
 /// h[t] = rms(mean of the 4 streams of R[t]) * w - the final hidden state per row (the NextN block's input).

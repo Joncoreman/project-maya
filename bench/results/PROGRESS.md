@@ -22,11 +22,12 @@ Machines
 | 2026-10-06 | CPU lane (see Uranus): 7 cores per GPU half compute some RAM-tier experts beside the PCIe pulls | 45.9 tok/s (200 tok), **50.5 tok/s** (1000 tok) | 3.5 ms/token |
 
 | 2026-10-07 | Maya-S; prompt path: a deep disk landing ring (64 experts instead of 12 - the reader was the NVMe's bottleneck, ~0.7 of ~2.9 GB/s), the next layer's disk experts read ahead, chunks sized from the card (4.6k tokens on 32 GB) | - | prompts of 2k / 8k / 16k / 30k tokens: 240 / 331 / 345 / - -> **273 / 428 / 487 / 506 tok/s** |
+| 2026-10-08 | prompt attention on the tensor cores (FP16 operands, F32 accumulation; the next cells loaded while the current ones compute), the DSA latent cache in FP16 | 28.0 tok/s (5 topics, 300 tokens each) | prompts of 2k / 8k / 16k / 30k tokens: **286 / 469 / 538 / 561 tok/s** |
 
 Live chat server (Mercury, cold start to warm): ~30 -> ~40 tok/s on 60-150 token answers.
 
 One GPU of Mercury (32 GB, 30 GB RAM), the same 2026-10-07 prompt-path change: 2k / 8k-token prompts 120 / 115 ->
-134 / **226 tok/s**.
+134 / **226 tok/s**; with the 2026-10-08 attention work 139 / **243 tok/s**.
 
 ## Uranus (1 GPU) - single-GPU work starts 2026-10-06
 

@@ -35,7 +35,7 @@ Measured with Maya-S through the dashboard. A token is about ¾ of a word.
 
 | Machine | Decode (writing the answer) | Prefill (reading your prompt) |
 | --- | ---: | ---: |
-| **2x Tesla V100 32 GB** (PCIe 3), Xeon E5-2690 v4, 30 GB RAM, one NVMe | **up to 40 tokens/s** | **up to 500 tokens/s** |
+| **2x Tesla V100 32 GB** (PCIe 3), Xeon E5-2690 v4, 30 GB RAM, one NVMe | **up to 40 tokens/s** | **up to 560 tokens/s** |
 
 - The speed holds with context: the attention's selection step is linear in the context length, so a 60K-token
   conversation keeps answering fast.

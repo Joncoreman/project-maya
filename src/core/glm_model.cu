@@ -1817,6 +1817,9 @@ bool strata::core::Glm5Model::load_pack(const std::string& pack_dir, int64_t max
     const int64_t hc_dim = (int64_t) g_.hc * g_.n_embd;
     const int64_t max_pools = max_ctx / g_.idx_kpool;
     int64_t floats = 2 * hc_dim;
+    // the fast path keeps the DSA latent cache in FP16 (half the bytes: at 128k context ~0.8 GB more for experts on
+    // each card, and the prompt attention reads half as much); the reference path (STRATA_GLM_SLOW) keeps F32
+    const int64_t lat_floats = fast_mode_ ? (int64_t) g_.kv_lora * max_ctx / 2 : (int64_t) g_.kv_lora * max_ctx;
     // (one entry past the trunk: the NextN block's DSA caches, when this half carries it)
     kda_S_.assign((size_t) g_.n_layers + 1, 0);
     kda_conv_.assign((size_t) g_.n_layers + 1, 0);
@@ -1826,7 +1829,7 @@ bool strata::core::Glm5Model::load_pack(const std::string& pack_dir, int64_t max
     dsa_pool_.assign((size_t) g_.n_layers + 1, 0);
     if (mtp_il_ >= 0) {
         dsa_lat_[(size_t) mtp_il_] = floats;
-        floats += (int64_t) g_.kv_lora * max_ctx;
+        floats += lat_floats;
         dsa_ik_[(size_t) mtp_il_] = floats;
         floats += (int64_t) g_.idx_key * max_ctx;
         dsa_ig_[(size_t) mtp_il_] = floats;
@@ -1843,7 +1846,7 @@ bool strata::core::Glm5Model::load_pack(const std::string& pack_dir, int64_t max
             floats += (int64_t) 3 * g_.d_inner() * (g_.d_conv - 1);
         } else {
             dsa_lat_[(size_t) il] = floats;
-            floats += (int64_t) g_.kv_lora * max_ctx;
+            floats += lat_floats;
             dsa_ik_[(size_t) il] = floats;
             floats += (int64_t) g_.idx_key * max_ctx;
             dsa_ig_[(size_t) il] = floats;
