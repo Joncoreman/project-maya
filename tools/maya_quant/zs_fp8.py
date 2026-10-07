@@ -94,26 +94,40 @@ def main():
                 B = len(ix)
                 h = torch.from_numpy(np.asarray(src[offs[b]:offs[b + 1]])).view(torch.bfloat16).to(dev).float()
                 h = h.view(B, tb, HC, H)
-                pos = torch.arange(tb, device=dev).unsqueeze(0).expand(B, tb)
-                mask = torch.ones(B, tb, dtype=torch.bool, device=dev)
-                # Glm5NextTextDecoderLayer.forward, as calib.py runs it
-                residual = h
-                post, comb, x = layer.attn_hc(h)
-                x = layer.input_layernorm(x)
-                if layer.block_type == "linear_attention":
-                    x = layer.self_attn(hidden_states=x, cache_params=None, attention_mask=mask)
-                else:
-                    prev = topk_prev.get(b)
-                    x, _, tk = layer.self_attn(hidden_states=x, attention_mask=mask, position_ids=pos,
-                                              past_key_values=None, use_cache=False, position_embeddings=None,
-                                              prev_topk_indices=prev.to(dev) if prev is not None else None)
-                    if tk is not None:   # [B, T, 2051]: past the last selectable column every entry is -1 (none)
-                        w = int((tk >= 0).any(0).any(0).nonzero().max()) + 1 if bool((tk >= 0).any()) else 1
-                        new_topk[b] = tk[..., :w].cpu()
-                h = post.unsqueeze(-1) * x.unsqueeze(-2) + torch.matmul(comb.transpose(-1, -2), residual)
-                residual = h
-                post, comb, x = layer.ffn_hc(h)
-                x = layer.post_attention_layernorm(x)
+                # Glm5NextTextDecoderLayer.forward, as calib.py runs it - the attention half in sub-batches (the KDA
+                # chunk kernel's decay mask grows with sequences x 64-token chunks: 780 short ones asked for 97 GB)
+                sb = max(1, 24 // ((tb + 63) // 64))
+                prev = topk_prev.get(b)
+                xs, posts, combs, ress, tks = [], [], [], [], []
+                for s0 in range(0, B, sb):
+                    hs = h[s0:s0 + sb]
+                    n = hs.shape[0]
+                    pos = torch.arange(tb, device=dev).unsqueeze(0).expand(n, tb)
+                    mask = torch.ones(n, tb, dtype=torch.bool, device=dev)
+                    residual = hs
+                    post, comb, x = layer.attn_hc(hs)
+                    x = layer.input_layernorm(x)
+                    if layer.block_type == "linear_attention":
+                        x = layer.self_attn(hidden_states=x, cache_params=None, attention_mask=mask)
+                    else:
+                        pv = prev[s0:s0 + n].to(dev) if prev is not None else None
+                        x, _, tk = layer.self_attn(hidden_states=x, attention_mask=mask, position_ids=pos,
+                                                  past_key_values=None, use_cache=False, position_embeddings=None,
+                                                  prev_topk_indices=pv)
+                        if tk is not None:
+                            tks.append(tk)
+                    hs = post.unsqueeze(-1) * x.unsqueeze(-2) + torch.matmul(comb.transpose(-1, -2), residual)
+                    post, comb, x = layer.ffn_hc(hs)
+                    xs.append(layer.post_attention_layernorm(x))
+                    posts.append(post)
+                    combs.append(comb)
+                    ress.append(hs)
+                if tks:   # [B, T, 2051]: past the last selectable column every entry is -1 (none)
+                    tk = torch.cat(tks, 0)
+                    w = int((tk >= 0).any(0).any(0).nonzero().max()) + 1 if bool((tk >= 0).any()) else 1
+                    new_topk[b] = tk[..., :w].cpu()
+                x, post, comb, residual = torch.cat(xs, 0), torch.cat(posts, 0), torch.cat(combs, 0), torch.cat(ress, 0)
+                del xs, posts, combs, ress, tks
                 y = moe(x) if moe is not None else layer.mlp(x)
                 h = post.unsqueeze(-1) * y.unsqueeze(-2) + torch.matmul(comb.transpose(-1, -2), residual)
                 dst[offs[b]:offs[b + 1]] = h.reshape(-1, HC, H).to(torch.bfloat16).view(torch.uint16).cpu().numpy()
