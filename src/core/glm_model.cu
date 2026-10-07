@@ -38,10 +38,17 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
-#include <sys/mman.h>
 #include <memory>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 #include <sys/stat.h>
 #include <cstdlib>
 #include <cstring>
@@ -1343,9 +1350,36 @@ bool strata::core::Glm5Model::pack_moe_tail_device(std::string& err, const std::
 static bool pack_shard_mmap(const std::string& path, strata::core::Glm5Model::Shard& s, uint64_t data_start,
                             std::string& err) {
 #ifdef _WIN32
-    (void) s; (void) data_start;
-    err = "pack: windows mmap not wired";
-    return false;
+    // the same as below with Windows' calls: a read-only view of the whole shard, and a second, unbuffered handle
+    // (FILE_FLAG_NO_BUFFERING, Windows' O_DIRECT) for the fast path's expert reads
+    HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        err = "pack: open failed for " + path;
+        return false;
+    }
+    LARGE_INTEGER sz{};
+    if (!GetFileSizeEx(h, &sz)) {
+        CloseHandle(h);
+        err = "pack: the size of " + path + " is unknown";
+        return false;
+    }
+    s.size = (uint64_t) sz.QuadPart;
+    HANDLE m = CreateFileMappingA(h, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    void* v = m ? MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0) : nullptr;
+    if (m) CloseHandle(m);   // the view keeps the mapping
+    CloseHandle(h);
+    if (v == nullptr) {
+        err = "pack: mapping failed for " + path;
+        return false;
+    }
+    s.base = (uint8_t*) v;
+    s.path = path;
+    s.data_start = data_start;
+    HANDLE hd = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                            FILE_FLAG_NO_BUFFERING | FILE_FLAG_RANDOM_ACCESS, nullptr);
+    s.h_direct = hd == INVALID_HANDLE_VALUE ? nullptr : (void*) hd;
+    return true;
 #else
     int fd = open(path.c_str(), O_RDONLY);
     if (fd < 0) {

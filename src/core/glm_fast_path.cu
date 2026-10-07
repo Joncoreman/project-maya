@@ -42,8 +42,14 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <bit>
 #ifndef _WIN32
 #include <unistd.h>
+#else
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 #ifdef __linux__
 #include <sched.h>
@@ -95,6 +101,35 @@ void read_slice(const Glm5Model::Shard& sh, uint64_t off, size_t len, uint8_t* d
         done += (size_t) r;
     }
 #else
+    // Windows: the unbuffered handle the same way (sector-aligned offset, size and buffer), the mapping otherwise
+    if (sh.h_direct != nullptr) {
+        static thread_local uint8_t* bounce = nullptr;
+        static thread_local size_t cap = 0;
+        const uint64_t a0 = off & ~(uint64_t) 4095, a1 = (off + len + 4095) & ~(uint64_t) 4095;
+        const size_t need = (size_t) (a1 - a0);
+        if (cap < need) {
+            _aligned_free(bounce);
+            bounce = (uint8_t*) _aligned_malloc(need, 4096);
+            cap = bounce ? need : 0;
+        }
+        if (bounce != nullptr) {
+            size_t got = 0;
+            while (got < need) {
+                OVERLAPPED ov{};
+                const uint64_t at = a0 + got;
+                ov.Offset = (DWORD) at;
+                ov.OffsetHigh = (DWORD) (at >> 32);
+                const DWORD want = (DWORD) std::min<size_t>(need - got, (size_t) 1 << 30);
+                DWORD r = 0;
+                if (!ReadFile((HANDLE) sh.h_direct, bounce + got, want, &r, &ov) || r == 0) break;   // EOF: short
+                got += (size_t) r;
+            }
+            if (got >= (size_t) (off - a0) + len) {
+                std::memcpy(dst, bounce + (off - a0), len);
+                return;
+            }
+        }
+    }
     std::memcpy(dst, sh.base + off, len);
 #endif
 }
@@ -649,12 +684,18 @@ bool Glm5Model::fast_setup(std::string& err) {
                     total = (int64_t) (std::atof(rg) * 1073741824.0);
                 } else {
                     int64_t avail_kb = 0;
+#ifdef _WIN32
+                    MEMORYSTATUSEX ms{};
+                    ms.dwLength = sizeof ms;
+                    if (GlobalMemoryStatusEx(&ms)) avail_kb = (int64_t) (ms.ullAvailPhys >> 10);
+#else
                     if (FILE* mf = std::fopen("/proc/meminfo", "r")) {
                         char line[256];
                         while (std::fgets(line, sizeof line, mf))
                             if (std::sscanf(line, "MemAvailable: %lld kB", (long long*) &avail_kb) == 1) break;
                         std::fclose(mf);
                     }
+#endif
                     double head_gb = 6.0;
                     if (const char* h = getenv("STRATA_GLM_RAM_HEADROOM_GB")) head_gb = std::atof(h);
                     total = std::max<int64_t>(0, avail_kb * 1024 - (int64_t) (head_gb * 1073741824.0));
@@ -839,6 +880,21 @@ static int physical_cores() {
         if (std::find(seen.begin(), seen.end(), std::make_pair(pk, co)) == seen.end()) seen.push_back({pk, co});
     }
     return (int) seen.size();
+#elif defined(_WIN32)
+    // Windows: the processor cores (each one entry, whatever its SMT threads)
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (len == 0) return 0;
+    std::vector<uint8_t> buf(len);
+    auto* info = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*) buf.data();
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &len)) return 0;
+    int cores = 0;
+    for (DWORD at = 0; at < len;) {
+        auto* e = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*) (buf.data() + at);
+        if (e->Relationship == RelationProcessorCore) ++cores;
+        at += e->Size;
+    }
+    return cores;
 #else
     return 0;
 #endif
@@ -1534,7 +1590,7 @@ void Glm5Model::fast_service() {
                     }
                     F->pred_n.fetch_add(1, std::memory_order_relaxed);
                     F->pred_overlap.fetch_add(ov, std::memory_order_relaxed);
-                    F->pred_miss.fetch_add((uint64_t) __builtin_popcount(fetch | miss), std::memory_order_relaxed);
+                    F->pred_miss.fetch_add((uint64_t) std::popcount((unsigned) (fetch | miss)), std::memory_order_relaxed);
                     F->pred_miss_hit.fetch_add(mh, std::memory_order_relaxed);
                 }
                 if (il + 1 < (int) F->pred_of.size())
@@ -1561,8 +1617,8 @@ void Glm5Model::fast_service() {
                     F->prefetches.fetch_add(1, std::memory_order_relaxed);
                 }
             }
-            F->ram_hits.fetch_add((uint64_t) __builtin_popcount(fetch), std::memory_order_relaxed);
-            F->misses.fetch_add((uint64_t) __builtin_popcount(fetch | miss | cpu), std::memory_order_relaxed);
+            F->ram_hits.fetch_add((uint64_t) std::popcount((unsigned) (fetch)), std::memory_order_relaxed);
+            F->misses.fetch_add((uint64_t) std::popcount((unsigned) (fetch | miss | cpu)), std::memory_order_relaxed);
             if (F->n_ahead > 0) fast_ahead_route(il, ids, miss, rq->ahead);
             if (miss != 0) {
                 // ---- disk only: read each into a free RAM slot (it stays there unless it was promoted) or staging;
