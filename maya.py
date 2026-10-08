@@ -1097,7 +1097,8 @@ def main() -> int:
         return start(pick, a)
     prev = read_json(have[0]) if have else {}
     inst = prev.get("installer") or {}
-    a.gguf_dir = a.gguf_dir or inst.get("gguf_dir")
+    if not a.model:                                    # --model asks for that download, not the files set up before
+        a.gguf_dir = a.gguf_dir or inst.get("gguf_dir")
     prev_args = prev.get("args") or []
     prev_ctx = int(prev_args[prev_args.index("--max-context") + 1]) if "--max-context" in prev_args[:-1] else None
 
