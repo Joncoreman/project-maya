@@ -25,7 +25,23 @@ model's own:
 
 ## Zero-shot accuracy
 
-ZS_TABLE
+**Maya-M keeps 97.9% of the full FP8 model's zero-shot accuracy** - the same as Maya-S (97.9%): multiple-choice
+tasks at 400 questions each do not separate the two (a point or two either way is within the test's noise), while
+token by token (above) Maya-M is clearly closer to the FP8 model.
+
+| Task (zero-shot) | FP8 | Maya-M | Recovery |
+| --- | ---: | ---: | ---: |
+| ARC-Easy (acc) | 87.2 | 86.5 | 99.1% |
+| ARC-Challenge (acc norm) | 71.0 | 69.0 | 97.2% |
+| HellaSwag (acc norm) | 88.5 | 86.8 | 98.0% |
+| WinoGrande (acc) | 78.5 | 76.2 | 97.1% |
+| PIQA (acc norm) | 87.0 | 85.0 | 97.7% |
+| **Average** | **82.5** | **80.7** | **97.9%** |
+
+The same 400 questions per task for every model, scored the way lm-evaluation-harness scores them (the answer with
+the highest log-likelihood; length-normalized where the choices differ in length) - the FP8 model run layer by layer
+in PyTorch, Maya-M through Project Maya's engine (`tools/maya_quant/zs_*.py`). Maya-S on the same questions:
+[MAYA-S.md](MAYA-S.md).
 
 ## Tried and not kept
 

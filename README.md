@@ -32,7 +32,8 @@ Details: [bench/results/MAYA-S.md](bench/results/MAYA-S.md).
 **Maya-M** (116 GB) is the larger quant, made for PCs with a bigger memory pool across RAM and VRAM: more bits where
 they count - IQ2_S gate/up experts, IQ3_XXS down projections and IQ3_S in the most sensitive layers - with the same
 FP8 statistics and error-feedback rounding, calibrated toward tool calls and front-end code. It is closer to the FP8
-model than Maya-S: 23% lower KL divergence, and it picks the same next token as the FP8 model 86% of the time. Set it
+model than Maya-S token by token: 23% lower KL divergence, and it picks the same next token as the FP8 model 86%
+of the time; on the zero-shot tasks both keep 97.9% of the FP8 model's accuracy. Set it
 up with `./setup.sh --setup --model Maya-M` (Windows: `START-MAYA.bat --setup --model Maya-M`).
 Details: [bench/results/MAYA-M.md](bench/results/MAYA-M.md).
 

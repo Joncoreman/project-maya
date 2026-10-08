@@ -847,6 +847,23 @@ __global__ void __launch_bounds__(256) mv_kernel(const __grid_constant__ MvBatch
     if (lane == 0) J.y[row] = J.alpha * s + (J.bias ? J.bias[row] : 0.0f);
 }
 
+// ... the same for jobs of ONE quantized type: compiled for that type alone (the switch over every type costs the
+// generic kernel registers and occupancy - a Q6_K 8192 x 4096 GEMV on a V100: 53.4 -> 47.8 us, the same arithmetic)
+template<int T>
+__global__ void __launch_bounds__(256) mv_kernel_t(const __grid_constant__ MvBatch b) {
+    const int bid = blockIdx.x;
+    int ji = 0;
+    while (ji < b.n - 1 && bid >= b.blk_end[ji]) ++ji;
+    const MvJob& J = b.j[ji];
+    const int blk0 = ji ? b.blk_end[ji - 1] : 0;
+    const int row = (bid - blk0) * MV_ROWS + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    if (row >= J.n_out) return;
+    const float s = row_dot<T>((const uint8_t*) J.w + (size_t) row * rbytes<T>(J.n_in), (const block_q8_1*) J.xq,
+                               J.n_in, lane);
+    if (lane == 0) J.y[row] = J.alpha * s + (J.bias ? J.bias[row] : 0.0f);
+}
+
 __global__ void quantize_kernel(const float* __restrict__ x, block_q8_1* __restrict__ y, int n) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;   // n % 32 == 0: whole warps only
@@ -2656,19 +2673,49 @@ size_t row_bytes(int type, int64_t n_in) {
 
 bool mv(const MvJob* jobs, int n, cudaStream_t s) {
     if (n <= 0 || n > kMaxMvJobs) return false;
-    MvBatch b{};
-    int acc = 0;
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; i < n; ++i)
         if (!mv_type_ok(jobs[i].type)) {
             std::fprintf(stderr, "glm_fast mv: type %d unsupported\n", jobs[i].type);
             return false;
         }
-        b.j[i] = jobs[i];
-        acc += (jobs[i].n_out + MV_ROWS - 1) / MV_ROWS;
-        b.blk_end[i] = acc;
+    // the jobs of the common dense types go to a kernel compiled for their type (one launch per type present), the
+    // rest to the generic one; the jobs are independent, so their order does not matter
+    static const bool typed = getenv("STRATA_GLM_MV_GENERIC") == nullptr;
+    constexpr int kTyped[] = {14, 8, 12, 13};
+    bool done[kMaxMvJobs] = {};
+    if (typed) {
+        for (const int T : kTyped) {
+            MvBatch b{};
+            int acc = 0, m = 0;
+            for (int i = 0; i < n; ++i)
+                if (jobs[i].type == T) {
+                    b.j[m] = jobs[i];
+                    acc += (jobs[i].n_out + MV_ROWS - 1) / MV_ROWS;
+                    b.blk_end[m++] = acc;
+                    done[i] = true;
+                }
+            if (m == 0) continue;
+            b.n = m;
+            switch (T) {
+                case 14: mv_kernel_t<14><<<acc, 256, 0, s>>>(b); break;
+                case 8: mv_kernel_t<8><<<acc, 256, 0, s>>>(b); break;
+                case 12: mv_kernel_t<12><<<acc, 256, 0, s>>>(b); break;
+                case 13: mv_kernel_t<13><<<acc, 256, 0, s>>>(b); break;
+            }
+        }
     }
-    b.n = n;
-    mv_kernel<<<acc, 256, 0, s>>>(b);
+    MvBatch b{};
+    int acc = 0, m = 0;
+    for (int i = 0; i < n; ++i) {
+        if (done[i]) continue;
+        b.j[m] = jobs[i];
+        acc += (jobs[i].n_out + MV_ROWS - 1) / MV_ROWS;
+        b.blk_end[m++] = acc;
+    }
+    if (m > 0) {
+        b.n = m;
+        mv_kernel<<<acc, 256, 0, s>>>(b);
+    }
     launch_check("mv");
     return true;
 }

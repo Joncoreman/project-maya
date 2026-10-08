@@ -3,6 +3,21 @@
 Every release is on GitHub (Releases) with these notes; every published change moves the last number. Update: `git pull`, then `./setup.sh` (Windows:
 `START-MAYA.bat`) - it recompiles only what changed and starts.
 
+## v1.0.5 - 2026-10-08
+
+Maya-M is out: the larger quant (116 GB), closer to the full model token by token.
+
+- **Maya-M** on Hugging Face (`Maya-M/`): IQ2_S gate/up experts with error-feedback rounding, IQ3_XXS down
+  projections, IQ3_S in the most sensitive layers, from Z.ai's FP8 release with the FP8 model's own statistics,
+  calibrated toward tool calls and front-end code. Against the FP8 model: 23% lower KL divergence than Maya-S
+  (0.329 vs 0.428), the same next token 86.2% of the time (Maya-S 83.3%), and 97.9% of its zero-shot accuracy - the
+  same as Maya-S (multiple-choice tasks do not separate the two). Set it up with
+  `./setup.sh --setup --model Maya-M` (Windows: `START-MAYA.bat --setup --model Maya-M`); downloads are checked
+  against their published sha256. Maya-S stays the default. Results: `bench/results/MAYA-M.md`.
+- **Decode:** the dense matrix-vector products run in kernels compiled for their weight type (Q6_K, Q8_0, Q4_K,
+  Q5_K) - 10% faster per product, bit-identical results; it shows on cards that hold most experts in VRAM.
+- `--model` now takes that download even when an earlier setup used `--gguf-dir`.
+
 ## v1.0.4 - 2026-10-08
 
 Faster prefill again (how fast Maya reads your prompt), and more room for experts at long context.
