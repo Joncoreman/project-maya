@@ -1033,6 +1033,9 @@ def report(version: str) -> int:
             add(f"Engine log {log.name}: the last 25 lines", "\n".join(text[-25:]))
         else:
             add(f"Engine log {log.name}", "not written yet (start Maya once and ask it something)")
+    bench_txt = ROOT / "maya-bench.txt"
+    if bench_txt.exists():
+        add("Benchmark (maya-bench.txt, from --bench)", bench_txt.read_text(encoding="utf-8", errors="replace"))
     out = ROOT / "maya-report.txt"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     say()
@@ -1040,6 +1043,114 @@ def report(version: str) -> int:
     say("  Attach this file to your report (GitHub issue, X, or wherever you are asking). It has this PC's hardware,")
     say("  your Maya setup and the engine's speed lines - no API key, and your home folder is shown as ~.")
     say("  Best: run it right after a slow answer, so the log has that answer's numbers.")
+    return 0
+
+
+# ------------------------------------------------------------------------------------------------ the benchmark
+# the same three questions on every machine (greedy, thinking off), after one warm-up answer, so speeds compare
+BENCH_TOPICS = [
+    "Write a Python function that parses a CSV file into a list of dictionaries, with type hints and a docstring.",
+    "Explain how photosynthesis works, step by step, for a high-school student.",
+    "Write a complete HTML page with a canvas that draws a bouncing ball animation in JavaScript.",
+]
+
+
+def bench(cfg_path: Path, version: str) -> int:
+    """--bench: a standard speed test of the installed model on this PC - decode (writing an answer) on three
+    questions and prefill (reading a prompt) at 2k and 8k tokens of this folder's docs - through the engine alone, the
+    way the dashboard starts it.  Writes maya-bench.txt (--report includes it).  A few minutes."""
+    import urllib.request
+    cfg = read_json(cfg_path)
+    port = cfg.get("port") or 8080
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)
+        fail(f"Maya is running (port {port}): the benchmark needs the GPU memory it holds",
+             "stop it (Ctrl+C in its window), then run --bench again")
+    except OSError:
+        pass
+    sys.path.insert(0, str(ROOT))
+    import serve.server as SV                      # the server's own engine command and environment
+    import strata_tokenizer as ST
+    args = cfg.get("args") or []
+    pack = Path(args[args.index("--glm-pack") + 1]) if "--glm-pack" in args[:-1] else None
+    tp = Path(cfg.get("tokenizer") or (pack / "tokenizer" if pack else ""))
+    if not (tp / "vocab.json").exists():
+        fail(f"{cfg_path.name}: the tokenizer is missing ({tp})", f"run {ME} --setup to repair it")
+    vocab = json.loads((tp / "vocab.json").read_text(encoding="utf-8"))
+    names = [None] * len(vocab)
+    for t, i in vocab.items():
+        names[i] = t
+    tok = ST.Tokenizer(names, (tp / "merges.txt").read_text(encoding="utf-8").split("\n"),
+                       json.loads((tp / "token_type.json").read_text()))
+    ctx = int(args[args.index("--max-context") + 1]) if "--max-context" in args[:-1] else 32768
+    text = "\n\n".join(p.read_text(encoding="utf-8", errors="replace")
+                       for p in [ROOT / "README.md"] + sorted((ROOT / "docs").glob("*.md")) +
+                       sorted((ROOT / "bench" / "results").glob("*.md")) if p.exists())
+    doc = tok.encode(text)
+    lens = [n for n in (2048, 8192) if n + 64 <= ctx and n <= len(doc)]
+    log_path = ROOT / "maya-bench.log"
+    step(1, f"benchmark: {cfg_path.name} (loading the model first - a minute or a few)")
+    t0 = time.time()
+    with open(log_path, "w", encoding="utf-8") as log:
+        p = subprocess.Popen([cfg["exe"], "--serve"] + SV.engine_args(cfg), stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=log, text=True, env=SV.child_env(cfg),
+                             cwd=cfg.get("cwd") or str(ROOT), bufsize=1)
+
+        def gen(ids, n_new):
+            p.stdin.write(f"GEN {n_new} temperature=0 " + ",".join(map(str, ids)) + "\n")
+            p.stdin.flush()
+            while True:
+                line = p.stdout.readline()
+                if not line:
+                    fail("the engine stopped during the benchmark", f"its log: {log_path}")
+                if line.startswith("DONE") or line.startswith("ERR"):
+                    return line.split()
+
+        while True:
+            line = p.stdout.readline()
+            if not line:
+                fail("the engine stopped while loading", f"its log: {log_path}")
+            if line.startswith("READY"):
+                break
+        ok(f"loaded in {time.time() - t0:.0f} s")
+        chat = lambda q: tok.encode("[gMASK]<sop><|user|>\n" + q + "<|assistant|>\n</think>", parse_special=True)
+        gen(chat("Say hello in five languages."), 64)          # warm-up: the first answer after a start is slower
+        results = []
+        for q in BENCH_TOPICS:
+            f = gen(chat(q), 256)
+            if f[0] == "DONE" and float(f[4]) > 0:
+                results.append(("decode", q, int(f[1]) / float(f[4]) * 1000.0))
+                say(f"  decode  {results[-1][2]:6.1f} tokens/s   {q[:60]}")
+        for i, n in enumerate(lens):
+            f = gen(doc[i * 997:i * 997 + n], 1)            # different openings: nothing reused between them
+            if f[0] == "DONE" and float(f[3]) > 0:
+                results.append(("prefill", f"{n} tokens", n / float(f[3]) * 1000.0))
+                say(f"  prefill {results[-1][2]:6.0f} tokens/s   a {n}-token prompt")
+        p.stdin.write("QUIT\n")
+        p.stdin.flush()
+        try:
+            p.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    stats = [x.strip() for x in log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+             if REPORT_LINES.search(x) and "warming the expert tiers" not in x]
+    dec = [r[2] for r in results if r[0] == "decode"]
+    gpus = ", ".join(f"{g['name']} {g['vram_gb']:.0f} GB" for g in S.gpus()) or "?"
+    total, _ = mem_gb()
+    lines = [f"Project Maya v{version} benchmark, {time.strftime('%Y-%m-%d %H:%M')}",
+             f"GPUs: {gpus}; RAM {total:.0f} GB; CPU {S.cpu_info()[0]}",
+             f"setup: {cfg_path.name}, context {ctx}, GPUs {cfg.get('gpu')}",
+             f"decode (writing the answer): mean {sum(dec) / max(1, len(dec)):.1f} tokens/s over {len(dec)} answers of "
+             f"256 tokens (greedy, thinking off)"]
+    lines += [f"  {r[2]:6.1f} tokens/s  {r[1]}" for r in results if r[0] == "decode"]
+    lines += [f"prefill (reading the prompt): {r[2]:.0f} tokens/s, {r[1]}" for r in results if r[0] == "prefill"]
+    lines += ["", "engine lines:"] + [x.replace(str(Path.home()), "~") for x in stats[-40:]]
+    out = ROOT / "maya-bench.txt"
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    say()
+    for x in lines[:4 + len(results)]:
+        say("  " + x)
+    ok(f"written: {out} - attach it (with {ME} --report) to a speed report")
     return 0
 
 
@@ -1078,12 +1189,20 @@ def main() -> int:
     ap.add_argument("--report", action="store_true", help="write maya-report.txt - this PC, the setup and the engine's "
                                                           "speed lines - to attach when you report a problem or a "
                                                           "speed (nothing is sent anywhere)")
+    ap.add_argument("--bench", action="store_true", help="a standard speed test of the installed model (a few "
+                                                         "minutes, with Maya stopped): decode on three questions and "
+                                                         "prefill at 2k / 8k tokens; writes maya-bench.txt")
     a = ap.parse_args()
     version = (HERE / "VERSION").read_text(encoding="utf-8").strip() if (HERE / "VERSION").exists() else "?"
     say(f"Project Maya v{version} - GLM-5.3-Flash on your own NVIDIA GPU(s). Built on Strata (MIT) and ggml/llama.cpp "
         "(MIT).")
     if a.report:
         return report(version)
+    if a.bench:
+        have = configs()
+        if not have:
+            fail("Maya is not set up here yet", f"run {ME} first")
+        return bench(have[0], version)
 
     have = configs()
     setting_up = a.setup or a.check or a.no_start or a.gguf_dir or a.model or a.rebuild or a.repack or a.download_model

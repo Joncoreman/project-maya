@@ -39,11 +39,12 @@ Details: [bench/results/MAYA-M.md](bench/results/MAYA-M.md).
 
 ## How fast is it?
 
-Measured with Maya-S through the dashboard. A token is about ¾ of a word.
+Measured with Maya-S. A token is about ¾ of a word. `./maya.sh --bench` measures your machine the same way.
 
 | Machine | Decode (writing the answer) | Prefill (reading your prompt) |
 | --- | ---: | ---: |
 | **2x Tesla V100 32 GB** (PCIe 3), Xeon E5-2690 v4, 30 GB RAM, one NVMe | **up to 40 tokens/s** | **up to 560 tokens/s** |
+| **1x Tesla V100 32 GB** (PCIe 3), Core i5-12600T, 64 GB RAM, one NVMe | **up to 19 tokens/s** | **up to 370 tokens/s** |
 
 - The speed holds with context: the attention's selection step is linear in the context length, so a 60K-token
   conversation keeps answering fast.
@@ -159,6 +160,9 @@ RAM experts the CPU computes itself. These settings change that (put them in the
 a slow answer or the error, and attach the `maya-report.txt` it writes in the Maya folder. It holds your GPUs, CPU,
 RAM and disks, your Maya setup and the engine's speed lines - where the time goes, token by token - so the engine
 can be tuned for your machine. Nothing is sent anywhere; your home folder shows as `~` and no API key is included.
+For a speed report, also run **`./maya.sh --bench`** with Maya stopped (Windows: `START-MAYA.bat --bench`): a
+standard test of a few minutes - decode on three questions, prefill at 2k and 8k tokens - that writes
+`maya-bench.txt`, which the report then includes.
 
 - **"nvcc ... cannot build for these GPUs"** - Volta needs CUDA 12.x; Blackwell needs 12.8 or newer. Several toolkits
   can be installed side by side; the installer takes the newest that fits.

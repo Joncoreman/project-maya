@@ -3,6 +3,16 @@
 Every release is on GitHub (Releases) with these notes; every published change moves the last number. Update: `git pull`, then `./setup.sh` (Windows:
 `START-MAYA.bat`) - it recompiles only what changed and starts.
 
+## v1.0.6 - 2026-10-08
+
+A standard speed test: `./maya.sh --bench` (Windows: `START-MAYA.bat --bench`).
+
+- **`--bench`** measures the installed model on your machine in a few minutes, with Maya stopped: decode on the same
+  three questions everywhere (after a warm-up answer) and prefill at 2k and 8k tokens, through the engine the way the
+  dashboard starts it. It writes `maya-bench.txt` with the results and the engine's per-token breakdown; `--report`
+  includes it - so speed reports from different machines can be compared.
+- README: single-GPU speeds (1x Tesla V100 32 GB, 64 GB RAM: decode up to 19 tokens/s, prefill up to 370 tokens/s).
+
 ## v1.0.5 - 2026-10-08
 
 Maya-M is out: the larger quant (116 GB), closer to the full model token by token.
